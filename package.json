@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "dev": "ts-node src/index.ts"
   },
   "keywords": [
     "database",
@@ -24,12 +25,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yourusername/database-connector-service.git"
+    "url": "git+https://github.com/ahmetdlbs/easy-database-connector.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/database-connector-service/issues"
+    "url": "https://github.com/ahmetdlbs/easy-database-connector/issues"
   },
-  "homepage": "https://github.com/yourusername/database-connector-service#readme",
+  "homepage": "https://github.com/ahmetdlbs/easy-database-connector#readme",
   "dependencies": {
     "mssql": "^9.1.1",
     "redis": "^4.6.7",
