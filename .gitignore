@@ -2,3 +2,5 @@
 /.env
 .npmignore
 .DS_Store
+/index.js
+/dist
