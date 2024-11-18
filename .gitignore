@@ -1,0 +1,4 @@
+/node_modules
+/.env
+.npmignore
+.DS_Store
