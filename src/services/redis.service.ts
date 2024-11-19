@@ -1,18 +1,18 @@
 import { createClient, RedisClientType } from 'redis';
-import { RedisConfig } from '../types/database.types';
+import { redisConfig } from '../config/database.config';
 
 let client: RedisClientType | null = null;
 
-const getClient = async (config: RedisConfig): Promise<RedisClientType | null> => {
-    if (!config.enabled) return null;
+const getClient = async (): Promise<RedisClientType | null> => {
+    if (!redisConfig.enabled) return null;
 
     if (!client) {
         client = createClient({
             socket: {
-                host: config.host,
-                port: config.port
+                host: redisConfig.host,
+                port: redisConfig.port
             },
-            password: config.password
+            password: redisConfig.password
         });
 
         await client.connect();
@@ -21,22 +21,22 @@ const getClient = async (config: RedisConfig): Promise<RedisClientType | null> =
 };
 
 export const redisService = {
-    get: async <T>(key: string, config: RedisConfig): Promise<T | null> => {
-        const client = await getClient(config);
+    get: async <T>(key: string): Promise<T | null> => {
+        const client = await getClient();
         if (!client) return null;
 
         const data = await client.get(key);
         return data ? JSON.parse(data) : null;
     },
 
-    set: async <T>(key: string, value: T, config: RedisConfig, ttl?: number): Promise<void> => {
-        const client = await getClient(config);
+    set: async <T>(key: string, value: T, ttl?: number): Promise<void> => {
+        const client = await getClient();
         if (!client) return;
-        await client.setEx(key, (ttl ? ttl : config.ttl), JSON.stringify(value));
+        await client.setEx(key, (ttl ? ttl : redisConfig.ttl), JSON.stringify(value));
     },
 
-    del: async (patterns: string | string[], config: RedisConfig): Promise<void> => {
-        const client = await getClient(config);
+    del: async (patterns: string | string[]): Promise<void> => {
+        const client = await getClient();
         if (!client) return;
         const patternArray = Array.isArray(patterns) ? patterns : [patterns];
 
@@ -46,5 +46,8 @@ export const redisService = {
                 await client.del(keys);
             }
         }
+    },
+    client: () => {
+        return getClient();
     }
 };

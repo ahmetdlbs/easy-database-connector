@@ -82,10 +82,10 @@ export type ColumnType = [string, mssql.ISqlTypeWithNoParams | string, mssql.ICo
 export type ExecuteInput = string | BulkInsertData | any;
 
 export interface DatabaseProvider {
-    query: <T>(input: ExecuteInput, config: DatabaseConfig) => Promise<T[]>;
-    execute: (input: ExecuteInput, config: DatabaseConfig) => Promise<unknown[]>;
-    queryWithPagination: <T>(input: ExecuteInput, config: DatabaseConfig) => Promise<PaginatedResult>;
-    transaction: <T>(callback: (transaction: mssql.Transaction) => Promise<T>, config: DatabaseConfig) => Promise<T>;
+    query: <T>(input: ExecuteInput) => Promise<T[]>;
+    execute: (input: ExecuteInput) => Promise<unknown[]>;
+    queryWithPagination: <T>(input: ExecuteInput) => Promise<PaginatedResult>;
+    transaction: <T>(callback: (transaction: mssql.Transaction) => Promise<T>) => Promise<T>;
     close: () => Promise<void>;
 }
 

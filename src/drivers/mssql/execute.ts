@@ -1,21 +1,22 @@
-import { DatabaseConfig, Row, ColumnType, EncryptionOptions, mssql } from '../../types/database.types';
+import { Row, ColumnType, EncryptionOptions, mssql } from '../../types/database.types';
+import { dbConfig } from '../../config/database.config';
 
-const manageKey = async (pool: mssql.ConnectionPool, config: DatabaseConfig, isOpen: boolean): Promise<void> => {
-    if (!config.symmetricKeyName || (isOpen && !config.certificateName)) return;
+const manageKey = async (pool: mssql.ConnectionPool, isOpen: boolean): Promise<void> => {
+    if (!dbConfig.symmetricKeyName || (isOpen && !dbConfig.certificateName)) return;
     await pool.request().batch(`
-        IF ${isOpen ? 'NOT ' : ''}EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${config.symmetricKeyName}')
-        ${isOpen ? 'OPEN' : 'CLOSE'} SYMMETRIC KEY ${config.symmetricKeyName} 
-        ${isOpen ? `DECRYPTION BY CERTIFICATE ${config.certificateName}` : ''}`
+        IF ${isOpen ? 'NOT ' : ''}EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
+        ${isOpen ? 'OPEN' : 'CLOSE'} SYMMETRIC KEY ${dbConfig.symmetricKeyName} 
+        ${isOpen ? `DECRYPTION BY CERTIFICATE ${dbConfig.certificateName}` : ''}`
     );
 };
-const bulkEncrypt = async (transaction: mssql.Transaction, values: unknown[], config: DatabaseConfig): Promise<unknown[]> => {
+const bulkEncrypt = async (transaction: mssql.Transaction, values: unknown[]): Promise<unknown[]> => {
     const request = new mssql.Request(transaction);
     request.input('values', mssql.NVarChar(mssql.MAX), JSON.stringify(values));
-    const result = await request.query(`SELECT EncryptByKey( Key_GUID('${config.symmetricKeyName}'), CONVERT(VARBINARY(MAX), value)) AS encrypted FROM OPENJSON(@values) WITH (value nvarchar(max) '$')`);
+    const result = await request.query(`SELECT EncryptByKey( Key_GUID('${dbConfig.symmetricKeyName}'), CONVERT(VARBINARY(MAX), value)) AS encrypted FROM OPENJSON(@values) WITH (value nvarchar(max) '$')`);
     
     return result.recordset.map(r => r.encrypted);
 };
-const executeBulk = async (pool: mssql.ConnectionPool, tableName: string, data: Row[], columns: ColumnType[], encryption: EncryptionOptions | undefined, config: DatabaseConfig, batchSize = 1000): Promise<void> => {
+const executeBulk = async (pool: mssql.ConnectionPool, tableName: string, data: Row[], columns: ColumnType[], encryption: EncryptionOptions | undefined, batchSize = 1000): Promise<void> => {
     const transaction = new mssql.Transaction(pool);
     await transaction.begin();
 
@@ -42,7 +43,7 @@ const executeBulk = async (pool: mssql.ConnectionPool, tableName: string, data: 
                 columnValues.map(async (values, idx) => {
                     const colName = columns[idx][0];
                     return encryptedColumns.has(colName)
-                        ? bulkEncrypt(transaction, values, config)
+                        ? bulkEncrypt(transaction, values)
                         : values;
                 })
             );
@@ -69,20 +70,20 @@ export const executeSql = async <T = any>(
         bulk?: { columns?: ColumnType[]; batchSize?: number };
         encryption?: EncryptionOptions;
     },
-    config: DatabaseConfig
 ): Promise<T[]> => {
     if (!pool) throw new Error('Database pool not initialized');
     
     try {
-        if (input.encryption?.open) await manageKey(pool, config, true);
+        if (input.encryption?.open) await manageKey(pool, true);
 
         if (!input.bulk) {
             const request = pool.request();
             input.parameters?.forEach((param, idx) => request.input(`p${idx}`, param));
 
-            const sql = input.encryption?.data?.length && config.symmetricKeyName 
-                ? input.sql.replace(/(@p\d+)(?=[,\s)])/g, (match, param) => `EncryptByKey(Key_GUID('${config.symmetricKeyName}'), CONVERT(VARBINARY(MAX), ${param}))`)
+            const sql = input.encryption?.data?.length && dbConfig.symmetricKeyName 
+                ? input.sql.replace(/(@p\d+)(?=[,\s)])/g, (match, param) => `EncryptByKey(Key_GUID('${dbConfig.symmetricKeyName}'), CONVERT(VARBINARY(MAX), ${param}))`)
                 : input.sql;
+
 
             const result = await request.query<T>(sql);
             return result.recordset || [];
@@ -90,11 +91,11 @@ export const executeSql = async <T = any>(
 
 
         if (input.bulk?.columns) {
-            await executeBulk( pool, input.sql.split(' ')[2], input.parameters as Row[], input.bulk.columns, input.encryption, config, input.bulk.batchSize);
+            await executeBulk( pool, input.sql.split(' ')[2], input.parameters as Row[], input.bulk.columns, input.encryption, input.bulk.batchSize);
         }
 
         return [];
     } finally {
-        if (input.encryption?.open) await manageKey(pool, config, false);
+        if (input.encryption?.open) await manageKey(pool, false);
     }
 };
