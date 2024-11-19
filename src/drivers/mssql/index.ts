@@ -39,15 +39,13 @@ export const mssqlProvider: DatabaseProvider = {
         const paginatedSql = `WITH Results AS ( SELECT COUNT(*) OVER() AS TotalRows, ROW_NUMBER() OVER(${input.orderBy ? `ORDER BY ${input.orderBy}` : 'ORDER BY (SELECT NULL)'}) AS RowNum, * FROM (${input.sql}) AS BaseQuery ) SELECT * FROM Results WHERE RowNum > ${offset} AND RowNum <= ${offset + pageSize}`;
         const result = await executeSql(pool, { ...input, sql: paginatedSql });
         const total = result[0]?.TotalRows ?? 0;
-
+        
         return {
-            data: result.map(({ TotalRows, RowNum, ...rest }: PaginatedRecord) => rest as T),
-            pagination: {
-                page,
-                pageSize,
-                total,
-                totalPages: Math.ceil(total / pageSize)
-            }
+            totalCount: total,
+            pageCount: Math.ceil(total / pageSize),
+            page,
+            pageSize,
+            detail: result.map(({ TotalRows, RowNum, ...rest }: PaginatedRecord) => rest as T),
         };
     },
     transaction: async <T>(callback: (transaction: mssql.Transaction) => Promise<T>): Promise<T> => {

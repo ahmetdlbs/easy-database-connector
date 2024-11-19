@@ -3,6 +3,9 @@ import { redisConfig } from '../config/database.config';
 
 let client: RedisClientType | null = null;
 
+
+
+
 const initializeClient = () => {
   if (redisConfig.enabled && !client) {
     client = createClient({
@@ -12,6 +15,7 @@ const initializeClient = () => {
       },
       password: redisConfig.password
     });
+    
 
     client.connect().catch(err => {
       console.error('Error connecting to Redis:', err);

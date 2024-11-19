@@ -54,12 +54,6 @@ export interface DatabaseRecord {
 }
 
 // Pagination metadata
-export interface PaginationMeta {
-    page: number;
-    pageSize: number;
-    total: number;
-    totalPages: number;
-}
 
 // Database result with count
 export interface DatabaseResultWithCount extends DatabaseRecord {
@@ -69,8 +63,11 @@ export interface DatabaseResultWithCount extends DatabaseRecord {
 
 // Final paginated response
 export interface PaginatedResult {
-    data: DatabaseRecord[];
-    pagination: PaginationMeta;
+    detail: DatabaseRecord[];
+    totalCount: number,
+    pageCount: number
+    page: string,
+    pageSize: number,
 }
 export interface EncryptionOptions {
     open: boolean;
