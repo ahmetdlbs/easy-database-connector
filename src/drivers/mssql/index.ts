@@ -1,6 +1,7 @@
-import { DatabaseConfig, DatabaseProvider, ExecuteInput, mssql, PaginatedResult, PaginatedRecord } from '../../types/database.types';
+import { DatabaseProvider, ExecuteInput, mssql, PaginatedResult, PaginatedRecord } from '../../types/database.types';
 import { executeSql } from './execute'
 import { dbConfig } from '../../config/database.config';
+import { manageKey } from './utils/manageKey'
 
 let pool: mssql.ConnectionPool | null = null;
 
@@ -36,10 +37,22 @@ export const mssqlProvider: DatabaseProvider = {
         const pageSize = input.pageSize || 10;
         const offset = (page - 1) * pageSize;
 
-        const paginatedSql = `WITH Results AS ( SELECT COUNT(*) OVER() AS TotalRows, ROW_NUMBER() OVER(${input.orderBy ? `ORDER BY ${input.orderBy}` : 'ORDER BY (SELECT NULL)'}) AS RowNum, * FROM (${input.sql}) AS BaseQuery ) SELECT * FROM Results WHERE RowNum > ${offset} AND RowNum <= ${offset + pageSize}`;
+        if (input.encryption?.open) await manageKey(pool, true);
+
+        const paginatedSql = `WITH Results AS ( 
+            SELECT 
+              COUNT(*) OVER() AS TotalRows, 
+              ROW_NUMBER() OVER(${input.orderBy ? `ORDER BY ${input.orderBy}` : 'ORDER BY (SELECT NULL)'}) AS RowNum, 
+              * 
+            FROM (${input.sql}) AS BaseQuery 
+          ) 
+          SELECT * FROM Results WHERE RowNum > ${offset} AND RowNum <= ${offset + pageSize}`;
+
         const result = await executeSql(pool, { ...input, sql: paginatedSql });
         const total = result[0]?.TotalRows ?? 0;
-        
+
+        if (input.encryption?.open) await manageKey(pool, false);
+
         return {
             totalCount: total,
             pageCount: Math.ceil(total / pageSize),

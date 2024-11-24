@@ -1,19 +1,12 @@
 import { Row, ColumnType, EncryptionOptions, mssql } from '../../types/database.types';
 import { dbConfig } from '../../config/database.config';
+import { manageKey } from './utils/manageKey'
 
-const manageKey = async (pool: mssql.ConnectionPool, isOpen: boolean): Promise<void> => {
-    if (!dbConfig.symmetricKeyName || (isOpen && !dbConfig.certificateName)) return;
-    await pool.request().batch(`
-        IF ${isOpen ? 'NOT ' : ''}EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
-        ${isOpen ? 'OPEN' : 'CLOSE'} SYMMETRIC KEY ${dbConfig.symmetricKeyName} 
-        ${isOpen ? `DECRYPTION BY CERTIFICATE ${dbConfig.certificateName}` : ''}`
-    );
-};
 const bulkEncrypt = async (transaction: mssql.Transaction, values: unknown[]): Promise<unknown[]> => {
     const request = new mssql.Request(transaction);
     request.input('values', mssql.NVarChar(mssql.MAX), JSON.stringify(values));
     const result = await request.query(`SELECT EncryptByKey( Key_GUID('${dbConfig.symmetricKeyName}'), CONVERT(VARBINARY(MAX), value)) AS encrypted FROM OPENJSON(@values) WITH (value nvarchar(max) '$')`);
-    
+
     return result.recordset.map(r => r.encrypted);
 };
 const executeBulk = async (pool: mssql.ConnectionPool, tableName: string, data: Row[], columns: ColumnType[], encryption: EncryptionOptions | undefined, batchSize = 1000): Promise<void> => {
@@ -27,7 +20,7 @@ const executeBulk = async (pool: mssql.ConnectionPool, tableName: string, data: 
         columns.forEach(([name, type, options]) => {
             if (typeof type === 'string') return;
             table.columns.add(
-                name, 
+                name,
                 encryptedColumns.has(name) ? mssql.VarBinary(mssql.MAX) : type,
                 { nullable: true, ...options }
             );
@@ -35,7 +28,7 @@ const executeBulk = async (pool: mssql.ConnectionPool, tableName: string, data: 
 
         for (let i = 0; i < data.length; i += batchSize) {
             const batch = data.slice(i, i + batchSize);
-            const columnValues = columns.map(([name]) => 
+            const columnValues = columns.map(([name]) =>
                 batch.map(row => row[name])
             );
 
@@ -72,7 +65,7 @@ export const executeSql = async <T = any>(
     },
 ): Promise<T[]> => {
     if (!pool) throw new Error('Database pool not initialized');
-    
+
     try {
         if (input.encryption?.open) await manageKey(pool, true);
 
@@ -80,18 +73,19 @@ export const executeSql = async <T = any>(
             const request = pool.request();
             input.parameters?.forEach((param, idx) => request.input(`p${idx}`, param));
 
-            const sql = input.encryption?.data?.length && dbConfig.symmetricKeyName 
+            const sql = input.encryption?.data?.length && dbConfig.symmetricKeyName
                 ? input.sql.replace(/(@p\d+)(?=[,\s)])/g, (match, param) => `EncryptByKey(Key_GUID('${dbConfig.symmetricKeyName}'), CONVERT(VARBINARY(MAX), ${param}))`)
                 : input.sql;
 
 
             const result = await request.query<T>(sql);
-            return result.recordset || [];
+            const data: any = (result?.recordsets?.length === 1 ? result.recordset : result.recordsets) || []
+            return data;
         }
 
 
         if (input.bulk?.columns) {
-            await executeBulk( pool, input.sql.split(' ')[2], input.parameters as Row[], input.bulk.columns, input.encryption, input.bulk.batchSize);
+            await executeBulk(pool, input.sql.split(' ')[2], input.parameters as Row[], input.bulk.columns, input.encryption, input.bulk.batchSize);
         }
 
         return [];
