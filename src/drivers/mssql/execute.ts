@@ -6,13 +6,7 @@ const bulkEncrypt = async (pool: mssql.ConnectionPool, values: unknown[]): Promi
     if (!values.length) return [];
     const request = new mssql.Request(pool);
     request.input('values', mssql.NVarChar(mssql.MAX), JSON.stringify(values));
-    const result = await request.query(`
-        SELECT EncryptByKey(
-            Key_GUID('${dbConfig.symmetricKeyName}'), 
-            CONVERT(VARBINARY(MAX), value)
-        ) AS encrypted 
-        FROM OPENJSON(@values) WITH (value nvarchar(max) '$')
-    `);    
+    const result = await request.query(`SELECT EncryptByKey(Key_GUID('${dbConfig.symmetricKeyName}'), CONVERT(VARBINARY(MAX), value)) AS encrypted  FROM OPENJSON(@values) WITH (value nvarchar(max) '$')`);    
     return result.recordset.map(r => r.encrypted);
 };
 
@@ -59,9 +53,7 @@ const bulkProcess = async (
 
         for (let i = 0; i < data.length; i += batchSize) {
             const batchEnd = Math.min(i + batchSize, data.length);
-            const batchRows = processedData.map(col => 
-                col.slice(i, batchEnd)
-            );
+            const batchRows = processedData.map(col => col.slice(i, batchEnd));
 
             table.rows.length = 0;
             for (let j = 0; j < batchRows[0].length; j++) {
@@ -105,31 +97,18 @@ export const executeSql = async <T = any>(
             await manageKey(pool, true, input.transaction);
             keyOpened = true;
         }
-        console.log(input.bulk)
 
         if (!input.bulk) {
-            console.log("buraya girdi")
             const request = input.transaction ? new mssql.Request(input.transaction) : pool.request();
 
-            input.parameters?.forEach((param, idx) => 
-                request.input(`p${idx}`, param)
-            );
+            input.parameters?.forEach((param, idx) => request.input(`p${idx}`, param));
             const result = await request.query<T>(input.sql);
-            return result?.recordset || [];
+            const data: any = (result?.recordsets?.length === 1 ? result.recordset : result.recordsets) || []
+            return data;
         }
 
         if (input.bulk?.columns) {
-            console.log("girdi buraya")
-            console.log(input.sql.split(' ')[2])
-            await bulkProcess(
-                pool, 
-                input.sql.split(' ')[2],
-                input.parameters as Row[], 
-                input.bulk.columns,
-                input.encryption,
-                input.bulk.batchSize,
-                input.transaction
-            );
+            await bulkProcess(pool, input.sql.split(' ')[2], input.parameters as Row[], input.bulk.columns, input.encryption, input.bulk.batchSize, input.transaction);
         }
 
         return [];

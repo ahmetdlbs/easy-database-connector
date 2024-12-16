@@ -1,65 +1,79 @@
 import { createClient, RedisClientType, RedisDefaultModules, RedisFunctions, RedisScripts } from 'redis';
 import { redisConfig } from '../config/database.config';
+
 type RedisClient = RedisClientType<RedisDefaultModules, RedisFunctions, RedisScripts>;
 
 let client: RedisClient | null = null;
-let connectionAttempts = 0;
-const MAX_RETRIES = 5;
-const RETRY_DELAY = 5000;
+let isConnecting = false;
+let reconnectTimeout: NodeJS.Timeout | null = null;
 
-const initializeClient = () => {
-    if (redisConfig.enabled && !client) {
-        client = createClient({
-            socket: {
-                host: redisConfig.host,
-                port: redisConfig.port,
-                connectTimeout: 10000,
-                reconnectStrategy: (retries) => {
-                    if (retries > MAX_RETRIES) {
-                        console.error(`Failed to connect to Redis after ${MAX_RETRIES} attempts`);
-                        return new Error('Max retries reached');
-                    }
-                    return RETRY_DELAY;
-                }
-            },
-            password: redisConfig.password
-        });
+const createRedisClient = () => {
+    return createClient({
+        socket: {
+            host: redisConfig.host,
+            port: redisConfig.port,
+            connectTimeout: 5000,
+            keepAlive: 5000,
+            reconnectStrategy: (retries) => {
+                if (retries > 10) return new Error('Max retries reached');
+                return Math.min(retries * 1000, 3000);
+            }
+        },
+        password: redisConfig.password
+    });
+};
+
+const connect = async (): Promise<RedisClient> => {
+    if (client?.isOpen) return client;
+    if (isConnecting) {
+        while (isConnecting) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (client?.isOpen) return client;
+    }
+
+    isConnecting = true;
+    try {
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+        }
+
+        client = createRedisClient();
 
         client.on('error', (err) => {
             console.error('Redis Client Error:', err);
-            handleReconnect();
-        });
-
-        client.on('connect', () => {
-            connectionAttempts = 0;
-        });
-
-        client.connect().catch(err => {
-            console.error('Error connecting to Redis:', err);
-            handleReconnect();
-        });
-    }
-};
-
-const handleReconnect = () => {
-    connectionAttempts++;
-    if (connectionAttempts < MAX_RETRIES) {
-        console.log(`Retrying connection in ${RETRY_DELAY/1000} seconds... (Attempt ${connectionAttempts}/${MAX_RETRIES})`);
-        setTimeout(() => {
-            client?.disconnect();
+            if (client?.isOpen) {
+                client.quit().catch(console.error);
+            }
             client = null;
-            initializeClient();
-        }, RETRY_DELAY);
+        });
+
+        await client.connect();
+        console.log('Successfully connected to Redis');
+        return client;
+    } catch (err) {
+        console.error('Redis connection error:', err);
+        client = null;
+        throw err;
+    } finally {
+        isConnecting = false;
     }
 };
-
-initializeClient();
 
 export const redisService = {
-    get: async <T>(key: string): Promise<T | null> => {
-        if (!client) return null;
+    client: async (): Promise<RedisClient> => {
         try {
-            const data = await client.get(key);
+            return await connect();
+        } catch (err) {
+            throw new Error('Failed to get Redis client');
+        }
+    },
+
+    get: async <T>(key: string): Promise<T | null> => {
+        try {
+            const redis = await connect();
+            const data = await redis.get(key);
             return data ? JSON.parse(data) : null;
         } catch (err) {
             console.error(`Error getting Redis key ${key}:`, err);
@@ -68,30 +82,30 @@ export const redisService = {
     },
 
     set: async <T>(key: string, value: T, ttl?: number): Promise<void> => {
-        if (!client) return;
         try {
-            await client.setEx(key, ttl ?? redisConfig.ttl, JSON.stringify(value));
+            const redis = await connect();
+            await redis.setEx(
+                key, 
+                ttl ?? redisConfig.ttl, 
+                JSON.stringify(value)
+            );
         } catch (err) {
             console.error(`Error setting Redis key ${key}:`, err);
         }
     },
 
     del: async (patterns: string | string[]): Promise<void> => {
-        if (!client) return;
         try {
+            const redis = await connect();
             const patternArray = Array.isArray(patterns) ? patterns : [patterns];
             for (const pattern of patternArray) {
-                const keys = await client.keys(pattern);
+                const keys = await redis.keys(pattern);
                 if (keys.length) {
-                    await client.del(keys);
+                    await redis.del(keys);
                 }
             }
         } catch (err) {
             console.error('Error deleting Redis keys:', err);
         }
-    },
-
-    client: (): RedisClient | null => {
-        return client;
     }
 };

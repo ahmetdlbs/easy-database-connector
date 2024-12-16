@@ -5,9 +5,7 @@ import { mssql } from '../types/database.types';
 
 const provider = mssqlProvider;
 
-export async function query<T extends DatabaseRecord>(
-    input: ExecuteInput & { transaction?: mssql.Transaction }
-): Promise<T[]> {
+export async function query<T extends DatabaseRecord>(input: ExecuteInput & { transaction?: mssql.Transaction }): Promise<T[]> {
     try {
         if (input?.cache && !input.transaction) {
             const cached = await redisService.get<T[]>(input.cache.key);
@@ -17,18 +15,17 @@ export async function query<T extends DatabaseRecord>(
         const result = await provider.query<T>(input);
 
         if (input?.cache && !input.transaction) {
-            await redisService.set(input.cache.key, result);
+            await redisService.set(input.cache.key, result, input.cache?.ttl);
         }
 
         return result;
     } catch (error) {
+        console.error('Query error:', error);
         throw error;
     }
 }
 
-export async function execute(
-    input: ExecuteInput & { transaction?: mssql.Transaction }
-): Promise<any[]> {
+export async function execute(input: ExecuteInput & { transaction?: mssql.Transaction }): Promise<any[]> {
     try {
         if (input.cache) {
             await redisService.del(input.cache.key);
@@ -36,23 +33,20 @@ export async function execute(
 
         return await provider.execute(input);
     } catch (error) {
+        console.error('Execute error:', error);
         throw error;
     }
 }
 
-export async function transaction<T>(
-    callback: (transaction: mssql.Transaction) => Promise<T>
-): Promise<T> {
+export async function transaction<T>( callback: (transaction: mssql.Transaction) => Promise<T>): Promise<T> {
     return provider.transaction(callback);
 }
 
-export async function queryWithPagination(
-    input: ExecuteInput & { transaction?: mssql.Transaction }
-): Promise<PaginatedResult> {
+export async function queryWithPagination(input: ExecuteInput & { transaction?: mssql.Transaction }): Promise<PaginatedResult> {
     try {
         if (input?.cache && !input.transaction) {
-            const cached = await redisService.get(input.cache.key);
-            if (cached) return cached as PaginatedResult;
+            const cached = await redisService.get<PaginatedResult>(input.cache.key);
+            if (cached) return cached;
         }
 
         const result = await provider.queryWithPagination(input);
@@ -63,6 +57,7 @@ export async function queryWithPagination(
 
         return result;
     } catch (error) {
+        console.error('Pagination query error:', error);
         throw error;
     }
 }
