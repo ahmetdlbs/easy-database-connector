@@ -1,11 +1,8 @@
-import { DatabaseProvider, ExecuteInput, mssql, PaginatedResult } from '../../types/database.types';
+import { DatabaseProvider, ExecuteInput, mssql, PaginatedResult, TransactionInput, PaginationInput } from '../../types/database.types';
 import { executeSql } from './execute';
 import { dbConfig } from '../../config/database.config';
 import { manageKey } from './utils/manageKey';
 
-interface TransactionInput {
-    transaction?: mssql.Transaction;
-}
 
 let pool: mssql.ConnectionPool | null = null;
 let poolPromise: Promise<mssql.ConnectionPool> | null = null;
@@ -69,7 +66,7 @@ export const mssqlProvider: DatabaseProvider = {
     },
 
     queryWithPagination: async <T extends Record<string, unknown>>(
-        input: ExecuteInput & TransactionInput
+        input: PaginationInput
     ): Promise<PaginatedResult> => {
         const currentPool = await getPool();
         const page = Math.max(1, Number(input.page) || 1);
@@ -79,13 +76,19 @@ export const mssqlProvider: DatabaseProvider = {
         let keyOpened = false;
         try {
             if (input.encryption?.open) {
-                await manageKey(currentPool, true,input.transaction);
+                await manageKey(currentPool, true, input.transaction);
                 keyOpened = true;
             }
 
+            const orderByRegex = /\bORDER\s+BY\s+(.+?)$/i;
+            const orderByMatch = input.sql.match(orderByRegex);
+            const baseQuery = input.sql.replace(orderByRegex, '');
+
+            const orderByClause = input.orderBy || (orderByMatch ? orderByMatch[1] : 'CURRENT_TIMESTAMP');
+
             const [{ total }] = await executeSql(currentPool, {
                 ...input,
-                sql: `SELECT COUNT(1) as total FROM (${input.sql}) AS CountQuery`
+                sql: `SELECT COUNT(1) as total FROM (${baseQuery}) AS CountQuery`
             });
 
             if (!total) {
@@ -98,19 +101,11 @@ export const mssqlProvider: DatabaseProvider = {
                 };
             }
 
-            const paginatedSql = `
-                WITH PaginatedData AS (
-                    SELECT QueryData.*, 
-                           ROW_NUMBER() OVER (ORDER BY CURRENT_TIMESTAMP) as RowNum 
-                    FROM (${input.sql}) as QueryData
-                )
-                SELECT * FROM PaginatedData 
-                WHERE RowNum > ${offset} AND RowNum <= ${offset + pageSize}
-            `;
-
+            const newParameters = [...(input.parameters || []), offset, pageSize];
             const results = await executeSql(currentPool, {
                 ...input,
-                sql: paginatedSql
+                sql: ` SELECT mainQuery.* FROM (${baseQuery}) AS mainQuery ORDER BY ${orderByClause} OFFSET @p${newParameters.length - 2} ROWS FETCH NEXT @p${newParameters.length - 1} ROWS ONLY`,
+                parameters: newParameters
             });
 
             return {
@@ -118,11 +113,11 @@ export const mssqlProvider: DatabaseProvider = {
                 pageCount: Math.ceil(total / pageSize),
                 page: page.toString(),
                 pageSize,
-                detail: results.map(({ RowNum, ...rest }) => rest) as T[]
+                detail: results as T[]
             };
         } finally {
             if (keyOpened) {
-                await manageKey(currentPool, false,input.transaction).catch(console.error);
+                await manageKey(currentPool, false, input.transaction).catch(console.error);
             }
         }
     },

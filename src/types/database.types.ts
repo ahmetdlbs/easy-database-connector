@@ -91,3 +91,13 @@ export interface PaginatedRecord {
     RowNum: number;
     [key: string]: unknown;
 }
+
+
+export interface TransactionInput {
+    transaction?: mssql.Transaction;
+}
+export interface PaginationInput extends ExecuteInput, TransactionInput {
+    page?: number;
+    pageSize?: number;
+    orderBy?: string;
+}
