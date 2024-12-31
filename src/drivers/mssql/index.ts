@@ -69,9 +69,9 @@ export const mssqlProvider: DatabaseProvider = {
         input: PaginationInput
     ): Promise<PaginatedResult> => {
         const currentPool = await getPool();
-        const page = Math.max(1, Number(input.page) || 1);
+        const page = Number.isInteger(Number(input.page)) && Number(input.page) >= 0 ? Number(input.page) : 1;
         const pageSize = Math.max(1, Math.min(1000, Number(input.pageSize) || 10));
-        const offset = (page - 1) * pageSize;
+        const offset = page * pageSize;
 
         let keyOpened = false;
         try {
