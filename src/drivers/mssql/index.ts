@@ -76,7 +76,7 @@ export const mssqlProvider: DatabaseProvider = {
         let keyOpened = false;
         try {
             if (input.encryption?.open) {
-                await manageKey(currentPool, true, input.transaction);
+                await manageKey(currentPool, input.encryption?.open, input.transaction);
                 keyOpened = true;
             }
 
@@ -116,8 +116,8 @@ export const mssqlProvider: DatabaseProvider = {
                 detail: results as T[]
             };
         } finally {
-            if (keyOpened) {
-                await manageKey(currentPool, false, input.transaction).catch(console.error);
+            if (keyOpened && input?.encryption?.open) {
+                await manageKey(currentPool, input.encryption?.open, input.transaction).catch(console.error);
             }
         }
     },

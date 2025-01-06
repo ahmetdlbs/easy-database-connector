@@ -1,43 +1,66 @@
 import { mssql } from '../../../types/database.types';
 import { dbConfig } from '../../../config/database.config';
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+interface KeyConfig {
+    aes?: boolean;
+    masterkey?: boolean;
+}
 
-export const manageKey = async (pool: mssql.ConnectionPool, isOpen: boolean, transaction?: mssql.Transaction): Promise<void> => {
-    if (!dbConfig.symmetricKeyName || (isOpen && !dbConfig.certificateName)) {
-        throw new Error('Symmetric key or certificate configuration is missing');
-    }
+export const manageKey = async (
+    pool: mssql.ConnectionPool, 
+    config: KeyConfig, 
+    transaction?: mssql.Transaction
+): Promise<void> => {
+    const request = transaction ? new mssql.Request(transaction) : pool.request();
 
-    let retryCount = 0;
-    const maxRetries = 3;
+    try {
+        if (config.masterkey || config.aes) {
+            if (config.masterkey) {
+                await request.batch(`
+                    IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
+                    BEGIN
+                        OPEN MASTER KEY DECRYPTION BY PASSWORD = '${dbConfig.masterKeyPassword}';
+                    END;
 
-    while (retryCount < maxRetries) {
-        try {
-            const request = transaction ? new mssql.Request(transaction) : pool.request();
-            await request.batch(`
-                IF ${isOpen ? 'NOT' : ''} EXISTS (
-                    SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}'
-                )
-                BEGIN
-                    ${isOpen ? 'OPEN' : 'CLOSE'} SYMMETRIC KEY ${dbConfig.symmetricKeyName} 
-                    ${isOpen ? `DECRYPTION BY CERTIFICATE ${dbConfig.certificateName}` : ''}
-                END
-            `);
-
-            const result = await request.query(`SELECT COUNT(1) as isOpen FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}'`);
-
-            const keyIsOpen = result.recordset[0].isOpen > 0;
-            if (keyIsOpen === isOpen) { return; }
-
-            throw new Error('Key operation verification failed');
-        } catch (error) {
-            retryCount++;
-            
-            if (retryCount === maxRetries) {
-                throw error;
+                    IF NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name = '${dbConfig.certificateName}')
+                    BEGIN
+                        CREATE CERTIFICATE ${dbConfig.certificateName}
+                            WITH SUBJECT = 'Certificate for column encryption';
+                    END;
+                `);
             }
 
-            await sleep(500 * retryCount);
+            if (config.aes) {
+                await request.batch(`
+                    IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = '${dbConfig.symmetricKeyName}')
+                    BEGIN
+                        CREATE SYMMETRIC KEY ${dbConfig.symmetricKeyName}
+                            WITH ALGORITHM = AES_256,
+                            IDENTITY_VALUE = 'AES 256 Encryption for Data'
+                            ENCRYPTION BY CERTIFICATE ${dbConfig.certificateName};
+                    END;
+
+                    IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
+                    BEGIN
+                        OPEN SYMMETRIC KEY ${dbConfig.symmetricKeyName}
+                            DECRYPTION BY CERTIFICATE ${dbConfig.certificateName};
+                    END;
+                `);
+            }
+        } else {
+            await request.batch(`
+                IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
+                BEGIN
+                    CLOSE SYMMETRIC KEY ${dbConfig.symmetricKeyName};
+                END;
+
+                IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
+                BEGIN
+                    CLOSE MASTER KEY;
+                END;
+            `);
         }
+    } catch (error) {
+        throw new Error(`Key operation failed: ${error}`);
     }
 };

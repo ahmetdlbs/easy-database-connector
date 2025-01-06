@@ -31,7 +31,7 @@ const bulkProcess = async (
         }
 
         if (encryption?.open) {
-            await manageKey(pool, true, existingTransaction);
+            await manageKey(pool, encryption.open, existingTransaction);
             keyOpened = true;
         }
 
@@ -73,8 +73,8 @@ const bulkProcess = async (
         }
         throw error;
     } finally {
-        if (keyOpened) {
-            await manageKey(pool, false, existingTransaction).catch(console.error);
+        if (keyOpened && encryption?.open) {
+            await manageKey(pool, encryption.open, existingTransaction).catch(console.error);
         }
     }
 };
@@ -94,7 +94,7 @@ export const executeSql = async <T = any>(
     let keyOpened = false;
     try {
         if (input.encryption?.open) {
-            await manageKey(pool, true, input.transaction);
+            await manageKey(pool, input.encryption?.open, input.transaction);
             keyOpened = true;
         }
 
@@ -113,8 +113,8 @@ export const executeSql = async <T = any>(
 
         return [];
     } finally {
-        if (keyOpened) {
-            await manageKey(pool, false, input.transaction).catch(console.error);
+        if (keyOpened && input.encryption?.open) {
+            await manageKey(pool, input.encryption?.open, input.transaction).catch(console.error);
         }
     }
 };

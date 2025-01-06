@@ -16,6 +16,7 @@ export const dbConfig: DatabaseConfig = {
     },
     symmetricKeyName: process.env.MSSQL_SYNNETRIC_KEY_NAME, 
     certificateName: process.env.MSSQL_CERTIFICATE_NAME, 
+    masterKeyPassword: process.env.MASTER_KEY_PASSWORD
 };
 
 export const redisConfig: RedisConfig = {
@@ -23,5 +24,5 @@ export const redisConfig: RedisConfig = {
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379'),
     password: process.env.REDIS_PASSWORD,
-    ttl: parseInt(process.env.REDIS_TTL || '3600')
+    ttl: parseInt(process.env.REDIS_TTL || '3600'),
 };

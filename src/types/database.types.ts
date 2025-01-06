@@ -17,6 +17,8 @@ export interface DatabaseConfig {
     };
     symmetricKeyName?: string;
     certificateName?: string;
+    masterKeyPassword?: string;
+
 }
 
 export interface RedisConfig {
@@ -70,10 +72,9 @@ export interface PaginatedResult {
     pageSize: number,
 }
 export interface EncryptionOptions {
-    open: boolean;
+    open: Object;
     data: string[];
 }
-
 
 export type ColumnType = [string, mssql.ISqlTypeWithNoParams | string, mssql.IColumnOptions?];
 export type ExecuteInput = string | BulkInsertData | any;
