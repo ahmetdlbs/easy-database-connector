@@ -12,52 +12,33 @@ export const manageKey = async (
     transaction?: mssql.Transaction
 ): Promise<void> => {
     const request = transaction ? new mssql.Request(transaction) : pool.request();
-
+    
     try {
         if (config.masterkey || config.aes) {
-            if (config.masterkey) {
-                await request.batch(`
-                    IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
-                    BEGIN
-                        OPEN MASTER KEY DECRYPTION BY PASSWORD = '${dbConfig.masterKeyPassword}';
-                    END;
-
-                    IF NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name = '${dbConfig.certificateName}')
-                    BEGIN
-                        CREATE CERTIFICATE ${dbConfig.certificateName}
-                            WITH SUBJECT = 'Certificate for column encryption';
-                    END;
-                `);
-            }
+            let query = `
+                IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
+                BEGIN
+                    OPEN MASTER KEY DECRYPTION BY PASSWORD = '${dbConfig.masterKeyPassword}';
+                END;
+            `;
 
             if (config.aes) {
-                await request.batch(`
-                    IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = '${dbConfig.symmetricKeyName}')
-                    BEGIN
-                        CREATE SYMMETRIC KEY ${dbConfig.symmetricKeyName}
-                            WITH ALGORITHM = AES_256,
-                            IDENTITY_VALUE = 'AES 256 Encryption for Data'
-                            ENCRYPTION BY CERTIFICATE ${dbConfig.certificateName};
-                    END;
-
+                query += `
                     IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
                     BEGIN
-                        OPEN SYMMETRIC KEY ${dbConfig.symmetricKeyName}
-                            DECRYPTION BY CERTIFICATE ${dbConfig.certificateName};
+                        OPEN SYMMETRIC KEY ${dbConfig.symmetricKeyName} 
+                        DECRYPTION BY CERTIFICATE ${dbConfig.certificateName};
                     END;
-                `);
+                `;
             }
+
+            await request.batch(query);
         } else {
             await request.batch(`
                 IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
-                BEGIN
                     CLOSE SYMMETRIC KEY ${dbConfig.symmetricKeyName};
-                END;
-
                 IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
-                BEGIN
                     CLOSE MASTER KEY;
-                END;
             `);
         }
     } catch (error) {
