@@ -12,27 +12,34 @@ export const manageKey = async (
     transaction?: mssql.Transaction
 ): Promise<void> => {
     const request = transaction ? new mssql.Request(transaction) : pool.request();
-    
     try {
         if (config.masterkey || config.aes) {
-            let query = `
-                IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
-                BEGIN
+            try {
+                await request.batch(`
                     OPEN MASTER KEY DECRYPTION BY PASSWORD = '${dbConfig.masterKeyPassword}';
-                END;
-            `;
-
-            if (config.aes) {
-                query += `
-                    IF NOT EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
-                    BEGIN
-                        OPEN SYMMETRIC KEY ${dbConfig.symmetricKeyName} 
-                        DECRYPTION BY CERTIFICATE ${dbConfig.certificateName};
-                    END;
-                `;
+                `);
+            } catch (error) {
+                const masterKeyError = error as mssql.RequestError;
+                if (masterKeyError.number !== 15466) {
+                    console.error('Master key error:', masterKeyError);
+                    throw new Error(`Master key operation failed: ${masterKeyError}`);
+                }
             }
 
-            await request.batch(query);
+            if (config.aes) {
+                try {
+                    await request.batch(`
+                        OPEN SYMMETRIC KEY ${dbConfig.symmetricKeyName} 
+                        DECRYPTION BY CERTIFICATE ${dbConfig.certificateName};
+                    `);
+                } catch (error) {
+                    const symmetricKeyError = error as mssql.RequestError;
+                    if (symmetricKeyError.number !== 15466) {
+                        console.error('Symmetric key error:', symmetricKeyError);
+                        throw new Error(`Symmetric key operation failed: ${symmetricKeyError}`);
+                    }
+                }
+            }
         } else {
             await request.batch(`
                 IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${dbConfig.symmetricKeyName}')
@@ -42,6 +49,8 @@ export const manageKey = async (
             `);
         }
     } catch (error) {
-        throw new Error(`Key operation failed: ${error}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.error('Full error details:', error);
+        throw new Error(`Key operation failed: ${errMsg}`);
     }
 };
