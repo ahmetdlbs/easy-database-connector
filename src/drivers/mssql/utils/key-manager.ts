@@ -3,15 +3,44 @@ import { mssql } from '../../../types/database.types';
 import { dbConfig } from '../../../config/database.config';
 
 /**
+ * Simple mutex implementation to synchronize key operations
+ */
+class KeyOperationMutex {
+  private locked = false;
+  private queue: (() => void)[] = [];
+
+  async acquire(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (!this.locked) {
+        this.locked = true;
+        resolve();
+      } else {
+        this.queue.push(resolve);
+      }
+    });
+  }
+
+  release(): void {
+    if (this.queue.length > 0) {
+      const nextResolver = this.queue.shift();
+      if (nextResolver) {
+        nextResolver();
+      }
+    } else {
+      this.locked = false;
+    }
+  }
+}
+
+/**
  * Manages encryption key states for database connections
- * Keeps track of open keys to prevent unnecessary operations
- * and properly handles transactions
  */
 export class KeyManagerService {
   private static instance: KeyManagerService;
   private connectionKeyMap: Map<string, Set<string>> = new Map();
   private masterKeyOpenMap: Map<string, boolean> = new Map();
   private keyTimeout: Map<string, NodeJS.Timeout> = new Map();
+  private mutex = new KeyOperationMutex();
   
   // Private constructor for singleton pattern
   private constructor() {}
@@ -28,24 +57,19 @@ export class KeyManagerService {
   
   /**
    * Get a unique identifier for a connection or transaction
-   * @param pool The connection pool
-   * @param transaction Optional transaction
-   * @returns A string identifier
    */
   private getConnectionId(pool: mssql.ConnectionPool, transaction?: mssql.Transaction): string {
-    // If we have a transaction, use its ID as it's a separate context
+    // Use transaction as a separate context if provided
     if (transaction) {
       return `tx_${transaction.isolationLevel}_${Date.now()}`;
     }
-    // Use a combination of object ID and timestamp as fallback
+    
+    // For pool, use connection properties that are guaranteed to exist
     return `pool_${pool.connected ? 'connected' : 'disconnected'}_${Date.now()}`;
   }
   
   /**
    * Manages the encryption keys according to the specified configuration
-   * @param pool Database connection pool
-   * @param config Configuration specifying which keys to open/close
-   * @param transaction Optional transaction to use for key operations
    */
   public async manageKey(
     pool: mssql.ConnectionPool, 
@@ -55,17 +79,20 @@ export class KeyManagerService {
     }, 
     transaction?: mssql.Transaction
   ): Promise<void> {
-    const connId = this.getConnectionId(pool, transaction);
-    
-    // Initialize maps for this connection if needed
-    if (!this.connectionKeyMap.has(connId)) {
-      this.connectionKeyMap.set(connId, new Set());
-    }
-    
-    const openKeys = this.connectionKeyMap.get(connId)!;
-    const request = transaction ? new mssql.Request(transaction) : pool.request();
+    // Acquire mutex to prevent concurrent key operations
+    await this.mutex.acquire();
     
     try {
+      const connId = this.getConnectionId(pool, transaction);
+      
+      // Initialize maps for this connection if needed
+      if (!this.connectionKeyMap.has(connId)) {
+        this.connectionKeyMap.set(connId, new Set());
+      }
+      
+      const openKeys = this.connectionKeyMap.get(connId)!;
+      const request = transaction ? new mssql.Request(transaction) : pool.request();
+      
       if (config.masterkey || config.aes) {
         // Opening keys
         
@@ -170,12 +197,14 @@ export class KeyManagerService {
       const errMsg = error instanceof Error ? error.message : String(error);
       console.error('Key operation failed:', error);
       throw new Error(`Key operation failed: ${errMsg}`);
+    } finally {
+      // Always release the mutex to prevent deadlocks
+      this.mutex.release();
     }
   }
   
   /**
    * Clean up resources when a connection is closed
-   * @param pool The connection pool being closed
    */
   public cleanupConnection(pool: mssql.ConnectionPool): void {
     // Clean up all connection keys that start with pool_
@@ -194,7 +223,6 @@ export class KeyManagerService {
   
   /**
    * Clean up resources when a transaction completes
-   * @param transaction The transaction that completed
    */
   public cleanupTransaction(pool: mssql.ConnectionPool, transaction: mssql.Transaction): void {
     // Clean up all connection keys that start with tx_
@@ -208,8 +236,6 @@ export class KeyManagerService {
   
   /**
    * Reset the timeout for key auto-closure
-   * @param connId The connection ID
-   * @param pool The connection pool (needed for closing keys)
    */
   private resetKeyTimeout(connId: string, pool: mssql.ConnectionPool): void {
     // Clear any existing timeout
