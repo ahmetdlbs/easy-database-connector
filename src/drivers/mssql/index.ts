@@ -1,8 +1,8 @@
+// src/drivers/mssql/index.ts
 import { DatabaseProvider, ExecuteInput, mssql, PaginatedResult, TransactionInput, PaginationInput } from '../../types/database.types';
 import { executeSql } from './execute';
 import { dbConfig } from '../../config/database.config';
-import { manageKey } from './utils/manageKey';
-
+import { keyManagerService } from './utils/key-manager';
 
 let pool: mssql.ConnectionPool | null = null;
 let poolPromise: Promise<mssql.ConnectionPool> | null = null;
@@ -28,7 +28,19 @@ const createPool = async (): Promise<mssql.ConnectionPool> => {
         requestTimeout: 30000
     };
 
-    return new mssql.ConnectionPool(config).connect();
+    const newPool = new mssql.ConnectionPool(config);
+    
+    // Handle pool errors
+    newPool.on('error', err => {
+        console.error('Pool error:', err);
+        if (pool === newPool) {
+            keyManagerService.cleanupConnection(newPool);
+            pool = null;
+            poolPromise = null;
+        }
+    });
+    
+    return newPool.connect();
 };
 
 const getPool = async (): Promise<mssql.ConnectionPool> => {
@@ -40,13 +52,6 @@ const getPool = async (): Promise<mssql.ConnectionPool> => {
         poolPromise = createPool().then(newPool => {
             pool = newPool;
             poolPromise = null;
-
-            newPool.on('error', err => {
-                console.error('Pool error:', err);
-                pool = null;
-                poolPromise = null;
-            });
-
             return newPool;
         });
     }
@@ -73,11 +78,9 @@ export const mssqlProvider: DatabaseProvider = {
         const pageSize = Math.max(1, Math.min(1000, Number(input.pageSize) || 10));
         const offset = (page - 1) * pageSize;
 
-        let keyOpened = false;
         try {
             if (input.encryption?.open) {
-                await manageKey(currentPool, input.encryption?.open, input.transaction);
-                keyOpened = true;
+                await keyManagerService.manageKey(currentPool, input.encryption.open, input.transaction);
             }
 
             const orderByRegex = /\bORDER\s+BY\s+(.+?)$/i;
@@ -115,12 +118,12 @@ export const mssqlProvider: DatabaseProvider = {
                 pageSize,
                 detail: results as T[]
             };
-        } finally {
-            if (keyOpened && input?.encryption?.open) {
-                await manageKey(currentPool, input.encryption?.open, input.transaction).catch(console.error);
-            }
+        } catch (error) {
+            console.error('Pagination query error:', error);
+            throw error;
         }
     },
+    
     transaction: async <T>(
         callback: (transaction: mssql.Transaction) => Promise<T>
     ): Promise<T> => {
@@ -129,19 +132,36 @@ export const mssqlProvider: DatabaseProvider = {
 
         try {
             await transaction.begin();
-
             const result = await callback(transaction);
             await transaction.commit();
+            
+            // Clean up transaction context
+            keyManagerService.cleanupTransaction(currentPool, transaction);
+            
             return result;
         } catch (error) {
-            await transaction.rollback();
+            try {
+                await transaction.rollback();
+                
+                // Clean up transaction context
+                keyManagerService.cleanupTransaction(currentPool, transaction);
+            } catch (rollbackError) {
+                console.error('Error during transaction rollback:', rollbackError);
+            }
             throw error;
         }
     },
 
     close: async (): Promise<void> => {
         if (pool) {
+            try {
+                await keyManagerService.manageKey(pool, { aes: false, masterkey: false });
+            } catch (error) {
+                console.error('Error closing keys during pool shutdown:', error);
+            }
+            
             await pool.close();
+            keyManagerService.cleanupConnection(pool);
             pool = null;
             poolPromise = null;
         }
