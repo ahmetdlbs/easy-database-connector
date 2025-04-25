@@ -1,36 +1,37 @@
 # Easy Database Connector
 
-A flexible and robust database connector service with built-in support for MSSQL, pagination, caching, encryption, and transactions.
+Performans odaklı, güvenli ve esnek bir veritabanı bağlantı servisi. MSSQL desteği, sayfalama, önbellek, şifreleme ve işlem yönetimiyle gelir.
 
-## Features
+## Özellikler
 
-- 🔒 Built-in encryption support for sensitive data
-- 🚀 Connection pooling for optimal performance
-- 📄 Pagination support with cache
-- 💾 Redis caching integration
-- 🔄 Transaction support
-- 🔌 Bulk operations
-- 📦 TypeScript support
-- 🛡️ Type safety
+- 🔒 Hassas veriler için yerleşik şifreleme desteği
+- 🚀 Optimal performans için bağlantı havuzu (connection pooling)
+- 📄 Önbellekli sayfalama desteği
+- 💾 Redis önbellekleme entegrasyonu
+- 🔄 İşlem (transaction) desteği
+- 🔌 Toplu işlemler (bulk operations)
+- 📦 TypeScript desteği
+- 🛡️ Tip güvenliği
+- 🔧 Eşzamanlı işlem desteği ve paralelleştirilmiş güvenlik
 
-## Installation
+## Kurulum
 
 ```bash
 npm install easy-database-connector
 ```
 
-## Quick Start
+## Hızlı Başlangıç
 
 ```typescript
 import { query, execute, queryWithPagination, transaction } from 'easy-database-connector';
 
-// Basic query
+// Temel sorgu
 const users = await query<User>({
     sql: 'SELECT * FROM users WHERE active = @p0',
     parameters: [true]
 });
 
-// Paginated query with caching
+// Önbellekli sayfalama sorgusu
 const pagedUsers = await queryWithPagination<User>({
     sql: 'SELECT * FROM users',
     parameters: [],
@@ -39,21 +40,21 @@ const pagedUsers = await queryWithPagination<User>({
     orderBy: 'name ASC',
     cache: {
         key: 'users:page1',
-        ttl: 300 // 5 minutes
+        ttl: 300 // 5 dakika
     }
 });
 
-// Encrypted data
+// Şifrelenmiş veri
 await execute({
     sql: 'INSERT INTO secure_data (data) VALUES (@p0)',
     parameters: ['sensitive information'],
     encryption: {
-        open: true,
+        open: { aes: true, masterkey: true },
         data: ['0']
     }
 });
 
-// Transaction example
+// İşlem (transaction) örneği
 await transaction(async (trx) => {
     await execute({
         sql: 'INSERT INTO users (name) VALUES (@p0)',
@@ -69,12 +70,12 @@ await transaction(async (trx) => {
 });
 ```
 
-## Configuration
+## Yapılandırma
 
-Create a `.env` file:
+`.env` dosyası oluşturun:
 
 ```env
-# Database Configuration
+# Veritabanı Yapılandırması
 DB_TYPE=mssql
 DB_HOST=localhost
 DB_USER=your_user
@@ -83,11 +84,12 @@ DB_DATABASE=your_database
 DB_PORT=1433
 DB_ENCRYPT=true
 
-# For Encrypted Columns
+# Şifrelenmiş Sütunlar İçin
 MSSQL_SYNNETRIC_KEY_NAME=your_key_name
 MSSQL_CERTIFICATE_NAME=your_cert_name
+MASTER_KEY_PASSWORD=your_master_key_password
 
-# Redis Configuration
+# Redis Yapılandırması
 REDIS_ENABLED=true
 REDIS_HOST=localhost
 REDIS_PORT=6379
@@ -95,12 +97,12 @@ REDIS_PASSWORD=your_redis_password
 REDIS_TTL=3600
 ```
 
-## API Reference
+## API Referansı
 
-### Query Functions
+### Sorgu Fonksiyonları
 
 #### `query<T>(input: ExecuteInput): Promise<T[]>`
-Execute a SELECT query with optional caching.
+İsteğe bağlı önbellekleme ile SELECT sorguları çalıştırır.
 
 ```typescript
 const users = await query<User>({
@@ -114,7 +116,7 @@ const users = await query<User>({
 ```
 
 #### `queryWithPagination<T>(input: ExecuteInput): Promise<QueryResult<T>>`
-Execute a paginated query with total count.
+Toplam sayı ile sayfalanmış bir sorgu çalıştırır.
 
 ```typescript
 const result = await queryWithPagination<User>({
@@ -126,10 +128,10 @@ const result = await queryWithPagination<User>({
 ```
 
 #### `execute(input: ExecuteInput): Promise<unknown[]>`
-Execute INSERT, UPDATE, DELETE queries or bulk operations.
+INSERT, UPDATE, DELETE sorguları veya toplu işlemler çalıştırır.
 
 ```typescript
-// Bulk insert
+// Toplu ekleme
 await execute({
     sql: 'INSERT INTO users',
     parameters: users,
@@ -144,7 +146,7 @@ await execute({
 ```
 
 #### `transaction<T>(callback: (trx: Transaction) => Promise<T>): Promise<T>`
-Execute multiple queries in a transaction.
+Bir işlem içinde birden fazla sorgu çalıştırır.
 
 ```typescript
 await transaction(async (trx) => {
@@ -156,7 +158,7 @@ await transaction(async (trx) => {
 });
 ```
 
-## Types
+## Tipler
 
 ### ExecuteInput
 ```typescript
@@ -164,7 +166,7 @@ interface ExecuteOptions {
     sql: string;
     parameters?: SqlValue[];
     encryption?: {
-        open: boolean;
+        open: boolean | { aes?: boolean; masterkey?: boolean };
         data: string[];
     };
     bulk?: {
@@ -195,14 +197,58 @@ interface QueryResult<T> {
 }
 ```
 
-## Contributing
+## Paralel İşlemler ve Performans İyileştirmeleri
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Bu kütüphanenin son sürümü, özellikle paralel işlemlerde ve AES şifreleme işlemlerinde performans ve güvenilirliği artırmak için önemli iyileştirmeler içermektedir:
 
-## License
+1. **İyileştirilmiş Anahtar Yönetimi**: Eşzamanlı işlemler için mutex tabanlı güvenlik ve doğru anahtar izolasyonu
+2. **Bağlantı Havuzu Optimizasyonu**: Güvenilir havuz yönetimi ve bağlantı ömrü kontrolü
+3. **Hata İzleme ve Günlükleme**: Kapsamlı hata izleme ve tanılama yetenekleri
+4. **Önbellek Yönetimi**: Redis bağlantı havuzu ve güvenilir önbellekleme
+5. **Hafıza Yönetimi**: Toplu işlemlerde ve AES şifreleme işlemlerinde geliştirilmiş hafıza yönetimi
 
-MIT License
+## En İyi Kullanım Örnekleri
 
-## Support
+1. Şifrelenmiş verileri işlerken daha küçük toplu işlem boyutları kullanın:
+```typescript
+await execute({
+    sql: 'INSERT INTO secure_data',
+    parameters: largeDataset,
+    bulk: {
+        columns: [
+            ['data', mssql.NVarChar(500)],
+        ],
+        batchSize: 500  // Şifrelenmiş veriler için daha küçük batch boyutu
+    },
+    encryption: {
+        open: { aes: true, masterkey: true },
+        data: ['data']
+    }
+});
+```
 
-For support, please open an issue in the GitHub repository.
+2. İşlemlerde bağlantı havuzunu verimli kullanmak için:
+```typescript
+// Uzun süreli büyük işlemler yerine daha küçük, bağımsız işlemler tercih edin
+const batchSize = 1000;
+for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    await transaction(async (trx) => {
+        for (const item of batch) {
+            await execute({
+                sql: 'INSERT INTO items (name) VALUES (@p0)',
+                parameters: [item.name],
+                transaction: trx
+            });
+        }
+    });
+}
+```
+
+## Katkıda Bulunma
+
+Katkılarınızı bekliyoruz! Lütfen bir Pull Request göndermekten çekinmeyin.
+
+## Lisans
+
+MIT Lisansı
