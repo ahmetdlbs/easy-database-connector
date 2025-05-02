@@ -368,6 +368,10 @@ export class KeyManagerService {
         // Belirli bir connectionId sağlanmışsa, sadece onu kaldır
         if (connectionId && this.connectionKeyStates.has(connectionId)) {
             this.connectionKeyStates.delete(connectionId);
+            // Veritabanında anahtarları kapat
+            this.cleanupKeysInDatabase(pool).catch(err => {
+                keyManagerLogger.error('Bağlantı anahtarlarını kapatma hatası:', err);
+            });
             return;
         }
         
@@ -382,8 +386,41 @@ export class KeyManagerService {
         for (const connId of toRemove) {
             this.connectionKeyStates.delete(connId);
         }
+        
+        // Havuz bağlantıları için veritabanı anahtarlarını kapat
+        if (toRemove.length > 0) {
+            this.cleanupKeysInDatabase(pool).catch(err => {
+                keyManagerLogger.error('Havuz anahtarlarını toplu kapatma hatası:', err);
+            });
+        }
     }
     
+    /**
+     * Veritabanında anahtarları kapatmak için yardımcı metod - SQL Server master key kurallarına uyar
+     */
+    private async cleanupKeysInDatabase(pool: mssql.ConnectionPool, transaction?: mssql.Transaction): Promise<void> {
+        try {
+            const request = transaction ? new mssql.Request(transaction) : pool.request();
+            
+            // Sadece özel simetrik anahtarları kapat, sistem master key'lerini kapatmayı deneme
+            if (config.database.symmetricKeyName) {
+                await request.batch(`
+                    IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${config.database.symmetricKeyName}')
+                    BEGIN
+                        CLOSE SYMMETRIC KEY ${config.database.symmetricKeyName};
+                    END
+                `);
+                keyManagerLogger.debug(`Simetrik anahtar kapatıldı: ${config.database.symmetricKeyName}`);
+            }
+            
+            // Önemli: Master key'i kapatmayı deneme - MS SQL Server'da "Global temporary keys are not allowed" hatası verir
+            // SQL Server bu anahtarların oturum süresince açık kalmasına izin verir ve kendi yönetir
+        } catch (error) {
+            keyManagerLogger.debug('Veritabanında anahtar temizleme sırasında beklenen hata (yok sayılıyor):', error);
+            // Hata fırlatma - bu hataları yönetmek için üst seviye metodları kullanıyoruz
+        }
+    }
+
     /**
      * Bir işlem için kaynakları temizler
      */
@@ -391,6 +428,10 @@ export class KeyManagerService {
         // Belirli bir connectionId sağlanmışsa, sadece onu kaldır
         if (connectionId && this.connectionKeyStates.has(connectionId)) {
             this.connectionKeyStates.delete(connectionId);
+            // Veritabanında anahtarları kapat
+            this.cleanupKeysInDatabase(pool, transaction).catch(err => {
+                keyManagerLogger.error('İşlem anahtarlarını kapatma hatası:', err);
+            });
             return;
         }
         
@@ -404,6 +445,42 @@ export class KeyManagerService {
         
         for (const connId of toRemove) {
             this.connectionKeyStates.delete(connId);
+        }
+        
+        // Veritabanında anahtarları kapat
+        this.cleanupKeysInDatabase(pool, transaction).catch(err => {
+            keyManagerLogger.error('İşlem anahtarlarını toplu kapatma hatası:', err);
+        });
+    }
+    
+    /**
+     * Sistemde açık anahtarları durumunu kontrol eder
+     * @param pool Veritabanı bağlantı havuzu
+     * @param printToLogs Sonuçları loga yazsın mı
+     * @returns Sistemdeki açık anahtar listesi
+     */
+    public async checkOpenKeys(pool: mssql.ConnectionPool, printToLogs: boolean = true): Promise<unknown[]> {
+        try {
+            const request = pool.request();
+            const result = await request.query(`
+                SELECT * FROM sys.openkeys
+            `);
+            
+            if (printToLogs) {
+                if (result.recordset.length === 0) {
+                    keyManagerLogger.info('Sistemde açık anahtar bulunmamaktadır');
+                } else {
+                    keyManagerLogger.info(`Sistemde ${result.recordset.length} açık anahtar bulundu:`);
+                    for (const key of result.recordset) {
+                        keyManagerLogger.info(`  - Anahtar: ${key.key_name}, ID: ${key.key_id}`);
+                    }
+                }
+            }
+            
+            return result.recordset;
+        } catch (error) {
+            keyManagerLogger.error('Açık anahtarları kontrol etme hatası:', error);
+            return [];
         }
     }
     

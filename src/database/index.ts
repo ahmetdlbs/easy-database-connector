@@ -27,6 +27,52 @@ try {
 }
 
 /**
+ * Veritabanında açık anahtarları kontrol eder
+ * Bu fonksiyon tanılama amaçlıdır - açık anahtarları tespit etmek için kullanılır
+ */
+export async function checkOpenKeys(): Promise<unknown[]> {
+    try {
+        // @ts-ignore - MSSQL provider olduğunu varsayıyoruz
+        if (typeof provider.checkOpenKeys === 'function') {
+            // @ts-ignore
+            return await provider.checkOpenKeys();
+        }
+        databaseLogger.warn('Bu veritabanı sağlayıcısı açık anahtar kontrollerini desteklemiyor');
+        return [];
+    } catch (error) {
+        databaseLogger.error('Açık anahtarları kontrol ederken hata:', error);
+        throw error instanceof DatabaseError 
+            ? error 
+            : new DatabaseError(
+                ErrorCode.DB_CONNECTION_ERROR,
+                'Açık anahtarları kontrol ederken hata: ' + (error instanceof Error ? error.message : String(error)),
+                { error }
+            );
+    }
+}
+
+/**
+ * Veritabanında tüm açık anahtarları kapatır
+ * Bu, veri ekleme/sorgulama sorunlarını çözmek için kullanılabilir
+ */
+export async function closeAllKeys(): Promise<void> {
+    try {
+        // Provider'da bu fonksiyon varsa kullan
+        // @ts-ignore - MSSQL provider olduğunu varsayıyoruz
+        if (typeof provider.closeAllKeys === 'function') {
+            // @ts-ignore
+            await provider.closeAllKeys();
+            databaseLogger.debug('Tüm anahtarlar kapatıldı');
+            return;
+        }
+        databaseLogger.debug('Bu veritabanı sağlayıcısı anahtar kapatma işlemini desteklemiyor');
+    } catch (error) {
+        // Hata durumunda programın çalışmasını engellememek için sadece logla
+        databaseLogger.debug('Tüm anahtarları kapatma işleminde hata (yok sayılıyor):', error);
+    }
+}
+
+/**
  * İsteğe bağlı önbellekleme ile SELECT sorgusu çalıştırır
  * @param options Sorgu seçenekleri
  * @returns Sorgu sonuçları
@@ -69,16 +115,81 @@ export async function query<T extends DatabaseRecord>(options: QueryOptions): Pr
 }
 
 /**
+ * Önbelleği temizler - hem doğrudan key hem de önek ile eşleşen tüm anahtarlar
+ * @param cacheKey Önbellek anahtarı
+ * @returns 
+ */
+async function clearCache(cacheKey: string): Promise<void> {
+    if (!cacheKey) return;
+
+    try {
+        // Önce belirli anahtarı sil
+        await redisService.del(cacheKey);
+        databaseLogger.debug(`Önbellek silindi: ${cacheKey}`);
+        
+        // Eğer ':' içeriyorsa, bu bir namespace olabilir, bu desenle eşleşen tüm önbelleği temizle
+        if (cacheKey.includes(':')) {
+            const cachePrefix = cacheKey.split(':')[0];
+            const wildcardKey = `${cachePrefix}:*`;
+            try {
+                const deleteCount = await redisService.del(wildcardKey);
+                if (deleteCount > 0) {
+                    databaseLogger.debug(`${deleteCount} önbellek öğesi silindi: ${wildcardKey}`);
+                }
+            } catch (redisError) {
+                databaseLogger.debug('Joker karakter ile önbellek silme hatası:', redisError);
+            }
+        }
+    } catch (error) {
+        // Hata durumunda sadece logla - uygulamanın devam etmesini sağla
+        databaseLogger.debug('Önbellek temizleme hatası (yok sayılıyor):', error);
+    }
+}
+
+/**
  * INSERT, UPDATE veya DELETE sorgusu çalıştırır
  * @param options Çalıştırma seçenekleri
  * @returns İşlem sonuçları
  */
 export async function execute(options: ExecuteOptions): Promise<unknown[]> {
     try {
-        // Belirtilmişse ve işlemde değilsek önbelleği geçersiz kıl
-        if (options.cache && !options.transaction) {
-            await redisService.del(options.cache.key);
-            databaseLogger.debug(`Önbellek geçersiz kılındı: ${options.cache.key}`);
+        // Önbellek temizleme - işlemde değilse
+        if (!options.transaction) {
+            // 1. Doğrudan belirtilen cache key varsa temizle
+            if (options.cache?.key) {
+                await clearCache(options.cache.key);
+            }
+            
+            // 2. SQL sorgusundan tablo adını çıkar ve ilgili önbellekleri temizle
+            const sql = options.sql?.toLowerCase();
+            if (sql) {
+                let tableName: string | undefined;
+                
+                // Çeşitli SQL komutları için tablo adını çıkar
+                if (sql.startsWith('insert into ')) {
+                    tableName = sql.substring(12).split(/\s+/)[0].replace(/[\[\]"`']/g, '');
+                } else if (sql.startsWith('update ')) {
+                    tableName = sql.substring(7).split(/\s+/)[0].replace(/[\[\]"`']/g, '');
+                } else if (sql.startsWith('delete from ')) {
+                    tableName = sql.substring(12).split(/\s+/)[0].replace(/[\[\]"`']/g, '');
+                }
+                
+                // Bulk insert durumunda da tablo adı olabilir
+                if (!tableName && options.bulk) {
+                    tableName = sql.trim().replace(/[\[\]"`']/g, '');
+                }
+                
+                // Tablo adı bulunduysa, bu tabloyla ilgili tüm önbellekleri temizle
+                if (tableName) {
+                    try {
+                        await redisService.del(`${tableName}:*`);
+                        databaseLogger.debug(`'${tableName}:*' desenine uyan tüm önbellek öğeleri temizlendi`);
+                    } catch (redisError) {
+                        // Hata durumunda sadece logla, işlemin devam etmesini sağla
+                        databaseLogger.debug(`'${tableName}:*' desenine uyan önbellek temizleme hatası:`, redisError);
+                    }
+                }
+            }
         }
 
         // Sorguyu çalıştır
@@ -167,6 +278,15 @@ export async function queryWithPagination<T>(
  */
 export async function closeConnections(): Promise<void> {
     try {
+        // Önce anahtarları güvenli bir şekilde temizlemeye çalış
+        try {
+            await closeAllKeys();
+        } catch (keyError) {
+            // Anahtar hatasını yok say - bu performans için kritik bir sorun değil
+            databaseLogger.debug('Anahtar temizleme hatası (yok sayılıyor):', keyError);
+        }
+        
+        // Bağlantıları kapat
         await provider.close();
         databaseLogger.info('Veritabanı bağlantıları kapatıldı');
     } catch (error) {
@@ -187,5 +307,7 @@ export default {
     execute,
     transaction,
     queryWithPagination,
-    closeConnections
+    closeConnections,
+    checkOpenKeys,
+    closeAllKeys
 };

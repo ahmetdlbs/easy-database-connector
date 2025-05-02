@@ -330,17 +330,24 @@ export const executeSql = async <T = any>(
         mssqlLogger.error('SQL yürütme hatası:', error);
         throw error;
     } finally {
-        // Sadece işlem içinde değilsek anahtarları kapat
-        if (keyConnId && !input.transaction) {
+        // Her durumda anahtarları güvenli bir şekilde kapat
+        if (keyConnId) {
             try {
+                // Ana işlemde anahtarları kapat - sadece simetrik anahtarları kapat
                 await keyManagerService.manageKey(
                     pool, 
-                    { aes: false, masterkey: false }, 
-                    undefined,
+                    { aes: false, masterkey: false }, // master key'i kapatma
+                    input.transaction, 
                     keyConnId
                 );
+                
+                // Performans için yüksek seviyeli debug loglama
+                if (process.env.DEBUG_KEYS === 'true') {
+                    mssqlLogger.debug(`${input.sql?.substring(0, 30)}... sorgusu için anahtarlar temizlendi`);
+                }
             } catch (cleanupError) {
-                mssqlLogger.error('Anahtarları temizleme hatası:', cleanupError);
+                // Hata durumunda sadece debug log - bu beklenen bir durum olabilir
+                mssqlLogger.debug('Anahtarları temizleme sırasında beklenen hata:', cleanupError);
             }
         }
     }

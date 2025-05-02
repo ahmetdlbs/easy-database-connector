@@ -3,6 +3,7 @@ import { executeSql } from './execute';
 import { keyManagerService } from './key-manager';
 import { poolManager } from './pool-manager';
 import { mssqlLogger } from '../../../utils';
+import { config } from '../../../config';
 
 /**
  * MSSQL veritabanı sağlayıcısı
@@ -153,10 +154,78 @@ export class MssqlProvider implements DatabaseProvider {
     }
 
     /**
+     * Veritabanında açık anahtarları kontrol eder
+     */
+    async checkOpenKeys(): Promise<unknown[]> {
+        const pool = await poolManager.getPool();
+        return keyManagerService.checkOpenKeys(pool);
+    }
+
+    /**
+     * Veritabanında tüm anahtarları kapatır - SQL Server kısıtlamalarını dikkate alır
+     */
+    async closeAllKeys(): Promise<void> {
+        const pool = await poolManager.getPool();
+        try {
+            // Açık anahtarları kontrol et
+            const openKeys = await keyManagerService.checkOpenKeys(pool, false);
+            
+            if (openKeys.length > 0) {
+                mssqlLogger.info(`${openKeys.length} açık anahtar bulundu, sadece özel anahtarlar kapatılıyor`);
+                
+                // Sadece özel simetrik anahtarı kapat
+                if (config.database.symmetricKeyName) {
+                    try {
+                        const request = pool.request();
+                        await request.batch(`
+                            IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${config.database.symmetricKeyName}')
+                            BEGIN
+                                CLOSE SYMMETRIC KEY ${config.database.symmetricKeyName};
+                            END
+                        `);
+                        mssqlLogger.info(`Simetrik anahtar kapatıldı: ${config.database.symmetricKeyName}`);
+                    } catch (error) {
+                        // Hata durumunda sadece logla ve devam et
+                        mssqlLogger.debug('Simetrik anahtar kapatma sırasında hata (yok sayılıyor):', error);
+                    }
+                }
+                
+                // Master key'i kapatmayı deneme, MS SQL Server bunu izin vermiyor
+            } else {
+                mssqlLogger.info('Kapatılacak açık anahtar bulunmamaktadır');
+            }
+            
+            // Hafızadaki anahtar durumlarını temizle
+            const connectionStates = keyManagerService['connectionKeyStates'];
+            if (connectionStates && connectionStates instanceof Map) {
+                for (const connId of connectionStates.keys()) {
+                    connectionStates.delete(connId); // Doğrudan temizleme
+                }
+                mssqlLogger.debug('Hafızadaki anahtar durumları temizlendi');
+            }
+        } catch (error) {
+            // Hata durumunda sadece logla, uygulamanın çalışmaya devam etmesini sağla
+            mssqlLogger.debug('Anahtarları kapatma sırasında beklenen hata (yok sayılıyor):', error);
+        }
+    }
+
+    /**
      * Veritabanı bağlantısını kapatır
      */
     async close(): Promise<void> {
-        await poolManager.shutdown();
+        try {
+            // Önce tüm anahtarları kapatmaya çalış
+            await this.closeAllKeys().catch(err => {
+                mssqlLogger.error('Kapatma sırasında anahtarları temizleme hatası:', err);
+            });
+            
+            // Havuzu kapat
+            await poolManager.shutdown();
+            
+        } catch (error) {
+            mssqlLogger.error('Veritabanı bağlantısını kapatma hatası:', error);
+            throw error;
+        }
     }
 }
 

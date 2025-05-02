@@ -1,5 +1,5 @@
 // Temel veritabanı işlevleri
-export { query, execute, transaction, queryWithPagination, closeConnections } from './database';
+export { query, execute, transaction, queryWithPagination, closeConnections, checkOpenKeys, closeAllKeys } from './database';
 
 // Redis servisi
 export { redisService } from './services';
@@ -11,7 +11,7 @@ export { mssql } from './types';
 export { config } from './config';
 
 // Sürüm bilgisi
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.6';
 
 // Uygulama bilgisi
 export const INFO = {
