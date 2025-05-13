@@ -85,6 +85,9 @@ const mockSqlModule = {
   Int: jest.fn().mockReturnValue({ type: 'Int' }),
   DateTime: jest.fn().mockReturnValue({ type: 'DateTime' }),
   VarBinary: jest.fn().mockReturnValue({ type: 'VarBinary' }),
+  TYPES: {
+    NVarChar: { type: 'NVarChar' }
+  },
   RequestError: class RequestError extends Error {
     constructor(message: string, code?: string) {
       super(message);

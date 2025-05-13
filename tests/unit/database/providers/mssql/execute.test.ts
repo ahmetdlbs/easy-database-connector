@@ -1,5 +1,5 @@
-import { executeSql, bulkEncrypt, bulkProcess } from '../../../../../src/database/providers/mssql/execute';
-import { keyManagerService } from '../../../../../src/database/providers/mssql/key-manager';
+import { executeSql, SqlExecutor } from '../../../../../src/database/providers/mssql/execute';
+import { sqlServerEncryption } from '../../../../../src/database/providers/mssql/encryption';
 import { mssql, MockConnectionPool, MockRequest, MockTransaction, MockTable } from '../../../../mocks/mssql.mock';
 import { ColumnType } from '../../../../../src/types';
 
@@ -9,14 +9,20 @@ jest.mock('mssql', () => {
   return mockMssql;
 });
 
-// KeyManagerService modülünü mockla
-jest.mock('../../../../../src/database/providers/mssql/key-manager', () => {
+// Encryption modülünü mockla
+jest.mock('../../../../../src/database/providers/mssql/encryption', () => {
   return {
-    keyManagerService: {
-      manageKey: jest.fn().mockImplementation(() => {
-        return Promise.resolve('mock-connection-id');
+    sqlServerEncryption: {
+      initialize: jest.fn().mockResolvedValue(true),
+      isEncryptionAvailable: jest.fn().mockReturnValue(true),
+      wrapQueryWithEncryption: jest.fn(sql => `/* WRAPPED */ ${sql}`),
+      buildEncryptionQuery: jest.fn().mockReturnValue('SELECT EncryptByKey(...) AS encrypted FROM OPENJSON(@values)'),
+      encryptValues: jest.fn().mockImplementation((pool, values) => {
+        // Mock şifrelenmiş değerleri döndür
+        return Promise.resolve(values.map(v => Buffer.from(`encrypted:${v}`)));
       }),
-      cleanupTransaction: jest.fn()
+      getDecryptSqlTemplate: jest.fn(col => `CAST(DECRYPTBYKEY(${col}) AS NVARCHAR(MAX))`),
+      getEncryptSqlTemplate: jest.fn(val => `ENCRYPTBYKEY(KEY_GUID('test-key'), CONVERT(VARBINARY(MAX), ${val}))`)
     }
   };
 });
@@ -93,113 +99,73 @@ describe('MSSQL Execute Module', () => {
       expect(mssql.Request).toHaveBeenCalledWith(transaction);
     });
     
-    it('should open encryption keys if encryption is specified', async () => {
+    it('should initialize encryption if encryption is specified', async () => {
       await executeSql(pool as any, {
         sql: 'SELECT * FROM users',
         encryption: {
-          open: { aes: true }
+          open: true
         }
       });
       
-      expect(keyManagerService.manageKey).toHaveBeenCalledWith(
-        pool,
-        { aes: true },
-        undefined,
-        undefined
-      );
+      expect(sqlServerEncryption.initialize).toHaveBeenCalledWith(pool);
     });
     
-    it('should close encryption keys after execution if not in a transaction', async () => {
+    it('should wrap query with encryption if encryption is available', async () => {
       await executeSql(pool as any, {
         sql: 'SELECT * FROM users',
         encryption: {
-          open: { aes: true }
+          open: true
         }
       });
       
-      expect(keyManagerService.manageKey).toHaveBeenCalledTimes(2);
-      expect(keyManagerService.manageKey).toHaveBeenLastCalledWith(
-        pool,
-        { aes: false, masterkey: false },
-        undefined,
-        'mock-connection-id'
-      );
-    });
-    
-    it('should not close encryption keys if in a transaction', async () => {
-      const transaction = new MockTransaction();
-      
-      await executeSql(pool as any, {
-        sql: 'SELECT * FROM users',
-        encryption: {
-          open: { aes: true }
-        },
-        transaction: transaction as any
-      });
-      
-      expect(keyManagerService.manageKey).toHaveBeenCalledTimes(1);
+      expect(sqlServerEncryption.wrapQueryWithEncryption).toHaveBeenCalledWith('SELECT * FROM users');
     });
     
     it('should throw an error if pool is not initialized', async () => {
       await expect(executeSql(null as any, {
         sql: 'SELECT * FROM users'
-      })).rejects.toThrow('Veritabanı havuzu başlatılmamış');
+      })).rejects.toThrow('Veritabanı bağlantısı sağlanmadı');
     });
   });
   
-  describe('bulkEncrypt', () => {
-    it('should encrypt values in batches', async () => {
+  describe('SqlExecutor.encryptValues', () => {
+    it('should encrypt values using sqlServerEncryption', async () => {
       const values = ['value1', 'value2', 'value3'];
       
-      const mockRequest = pool.request();
-      mockRequest.query.mockResolvedValue({
-        recordset: [
-          { encrypted: Buffer.from('encrypted1') },
-          { encrypted: Buffer.from('encrypted2') },
-          { encrypted: Buffer.from('encrypted3') }
-        ]
-      });
-      
-      const result = await bulkEncrypt(
+      const result = await SqlExecutor.encryptValues(
         pool as any,
         values
       );
       
-      expect(keyManagerService.manageKey).toHaveBeenCalled();
-      expect(mockRequest.input).toHaveBeenCalledWith('values', mssql.NVarChar(mssql.MAX), JSON.stringify(values));
-      expect(mockRequest.query).toHaveBeenCalledWith(expect.stringMatching(/EncryptByKey/));
+      expect(sqlServerEncryption.initialize).toHaveBeenCalled();
+      expect(sqlServerEncryption.encryptValues).toHaveBeenCalledWith(pool, values, undefined);
       expect(result).toHaveLength(3);
     });
     
     it('should handle empty values array', async () => {
-      const result = await bulkEncrypt(
+      const result = await SqlExecutor.encryptValues(
         pool as any,
         []
       );
       
       expect(result).toEqual([]);
-      expect(keyManagerService.manageKey).not.toHaveBeenCalled();
-      expect(pool.request().query).not.toHaveBeenCalled();
+      expect(sqlServerEncryption.encryptValues).not.toHaveBeenCalled();
     });
     
-    it('should reuse provided connection ID', async () => {
-      await bulkEncrypt(
+    it('should pass transaction to encryption service', async () => {
+      const transaction = new MockTransaction();
+      
+      await SqlExecutor.encryptValues(
         pool as any,
         ['value'],
-        undefined,
-        'existing-connection-id'
+        transaction as any
       );
       
-      expect(keyManagerService.manageKey).toHaveBeenCalledWith(
-        pool,
-        { aes: true, masterkey: true },
-        undefined,
-        'existing-connection-id'
-      );
+      expect(sqlServerEncryption.encryptValues).toHaveBeenCalledWith(pool, ['value'], transaction);
     });
   });
   
-  describe('bulkProcess', () => {
+  describe('SqlExecutor.bulkInsert', () => {
     // Mock Table sınıfını ayarla
     let mockTable: MockTable;
     
@@ -219,7 +185,7 @@ describe('MSSQL Execute Module', () => {
         ['name', mssql.NVarChar(100)]
       ];
       
-      await bulkProcess(
+      await SqlExecutor.bulkInsert(
         pool as any,
         'users',
         data,
@@ -243,7 +209,7 @@ describe('MSSQL Execute Module', () => {
       const data = [{ name: 'Test' }];
       const columns: ColumnType[] = [['name', mssql.NVarChar(100)]];
       
-      await bulkProcess(
+      await SqlExecutor.bulkInsert(
         pool as any,
         'users',
         data,
@@ -265,7 +231,7 @@ describe('MSSQL Execute Module', () => {
       const data = [{ name: 'Test' }];
       const columns: ColumnType[] = [['name', mssql.NVarChar(100)]];
       
-      await bulkProcess(
+      await SqlExecutor.bulkInsert(
         pool as any,
         'users',
         data,
@@ -292,7 +258,7 @@ describe('MSSQL Execute Module', () => {
       const data = [{ name: 'Test' }];
       const columns: ColumnType[] = [['name', mssql.NVarChar(100)]];
       
-      await expect(bulkProcess(
+      await expect(SqlExecutor.bulkInsert(
         pool as any,
         'users',
         data,
@@ -306,7 +272,7 @@ describe('MSSQL Execute Module', () => {
     });
     
     it('should handle empty data array', async () => {
-      const result = await bulkProcess(
+      const result = await SqlExecutor.bulkInsert(
         pool as any,
         'users',
         [],
@@ -317,6 +283,36 @@ describe('MSSQL Execute Module', () => {
       
       expect(result).toBeUndefined();
       expect(mssql.Table).not.toHaveBeenCalled();
+    });
+    
+    it('should process bulk data with encryption', async () => {
+      (sqlServerEncryption.isEncryptionAvailable as jest.Mock).mockReturnValue(true);
+      
+      const data = [
+        { id: 1, name: 'Test 1', secret: 'secret1' },
+        { id: 2, name: 'Test 2', secret: 'secret2' }
+      ];
+      
+      const columns: ColumnType[] = [
+        ['id', mssql.Int()],
+        ['name', mssql.NVarChar(100)],
+        ['secret', mssql.VarBinary(mssql.MAX)]
+      ];
+      
+      await SqlExecutor.bulkInsert(
+        pool as any,
+        'users',
+        data,
+        columns,
+        {
+          open: true,
+          data: ['secret']
+        },
+        1000
+      );
+      
+      // Şifreleme yapılıyor mu?
+      expect(sqlServerEncryption.encryptValues).toHaveBeenCalled();
     });
   });
 });

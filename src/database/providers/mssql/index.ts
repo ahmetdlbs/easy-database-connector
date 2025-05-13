@@ -1,233 +1,275 @@
-import { DatabaseProvider, ExecuteOptions, mssql, PaginationResult, QueryOptions, QueryWithPaginationOptions } from '../../../types';
-import { executeSql } from './execute';
-import { keyManagerService } from './key-manager';
-import { poolManager } from './pool-manager';
-import { mssqlLogger } from '../../../utils';
+// src/database/providers/mssql/index.ts
+import * as mssql from 'mssql';
+import { QueryOptions, ExecuteOptions, PaginationOptions, QueryWithPaginationOptions } from '../../../types';
+import { DatabaseProvider, PaginationResult } from '../../../types';
 import { config } from '../../../config';
+import { executeSql } from './execute';
+import { poolManager } from './pool-manager';
+import { sqlServerEncryption } from './encryption';
+import { mssqlLogger } from '../../../utils';
 
 /**
- * MSSQL veritabanı sağlayıcısı
- * Bu sınıf, SQL Server veritabanı işlemlerini yürütür
+ * SQL Server veritabanı sağlayıcısı
+ * Bu sınıf, SQL Server ile etkileşim için yüksek performanslı ve güvenli bir arayüz sağlar.
  */
-export class MssqlProvider implements DatabaseProvider {
-    /**
-     * SELECT sorgusu çalıştırır
-     * @param options Sorgu seçenekleri
-     * @returns Sorgu sonuçları
-     */
-    async query<T>(options: QueryOptions): Promise<T[]> {
-        const pool = await poolManager.getPool();
-        return executeSql<T>(pool, options);
+export class MSSQLProvider implements DatabaseProvider {
+  /**
+   * Bağlantı havuzunu alır veya oluşturur
+   * @returns SQL Server bağlantı havuzu
+   */
+  private async getConnection(): Promise<mssql.ConnectionPool> {
+    try {
+      // Havuz al veya oluştur
+      const pool = await poolManager.getPool();
+      
+      // Şifreleme servisini başlat
+      await sqlServerEncryption.configureFromDatabaseConfig(config.database);
+      await sqlServerEncryption.initialize(pool);
+      
+      return pool;
+    } catch (error) {
+      mssqlLogger.error('Veritabanı bağlantısı hatası:', error);
+      throw error;
     }
-
-    /**
-     * INSERT, UPDATE veya DELETE sorgusu çalıştırır
-     * @param options Çalıştırma seçenekleri
-     * @returns İşlem sonuçları
-     */
-    async execute(options: ExecuteOptions): Promise<unknown[]> {
-        const pool = await poolManager.getPool();
-        return executeSql(pool, options);
+  }
+  
+  /**
+   * SQL sorgusu çalıştırır ve sonuçları döndürür
+   * @param options Sorgu seçenekleri
+   * @returns Sorgu sonuçları
+   */
+  public async query<T>(options: QueryOptions): Promise<T[]> {
+    try {
+      const pool = await this.getConnection();
+      
+      return await executeSql<T>(pool, {
+        sql: options.sql,
+        parameters: options.parameters,
+        encryption: options.encryption,
+        transaction: options.transaction
+      });
+    } catch (error) {
+      mssqlLogger.error('Sorgu hatası:', error);
+      throw error;
     }
-
-    /**
-     * Sayfalanmış bir sorgu çalıştırır
-     * @param options Sayfalama seçenekleri
-     * @returns Sayfalanmış sorgu sonuçları
-     */
-    async queryWithPagination<T>(options: QueryWithPaginationOptions): Promise<PaginationResult<T>> {
-        const pool = await poolManager.getPool();
-        const page = Math.max(1, Number(options.page) || 1);
-        const pageSize = Math.max(1, Math.min(1000, Number(options.pageSize) || 10));
-        const offset = (page - 1) * pageSize;
-
-        try {
-            // Herhangi bir sorgu işleminden önce anahtarları aç
-            let keyConnId: string | undefined;
-            if (options.encryption?.open) {
-                keyConnId = await keyManagerService.manageKey(
-                    pool, 
-                    options.encryption.open as any, 
-                    options.transaction
-                );
-            }
-
-            // Sayım sorgusu için mevcut ORDER BY'ı kaldır
-            const orderByRegex = /\bORDER\s+BY\s+(.+?)(?:\s*OFFSET|\s*$)/i;
-            const orderByMatch = options.sql.match(orderByRegex);
-            const baseQuery = options.sql.replace(orderByRegex, '');
-
-            // Sağlanan ORDER BY veya sorgudan al, ya da varsayılana düş
-            const orderByClause = options.orderBy || (orderByMatch ? orderByMatch[1] : 'CURRENT_TIMESTAMP');
-
-            // Önce sayım sorgusunu çalıştır
-            const countResults = await executeSql(pool, {
-                ...options,
-                sql: `SELECT COUNT(1) as total FROM (${baseQuery}) AS CountQuery`,
-                encryption: options.encryption
-            });
-            
-            const total = countResults?.[0]?.total || 0;
-
-            // Sonuç yoksa boş döndür
-            if (!total) {
-
-                return {
-                    totalCount: 0,
-                    pageCount: 0,
-                    page: page.toString(),
-                    pageSize,
-                    detail: []
-                };
-            }
-
-            // Sayfalama parametrelerini ekle
-            const newParameters = [...(options.parameters || []), offset, pageSize];
-            
-            // Sayfalama ile veri sorgusunu çalıştır
-            const results = await executeSql(pool, {
-                ...options,
-                sql: `SELECT mainQuery.* FROM (${baseQuery}) AS mainQuery 
-                      ORDER BY ${orderByClause} 
-                      OFFSET @p${newParameters.length - 2} ROWS 
-                      FETCH NEXT @p${newParameters.length - 1} ROWS ONLY`,
-                parameters: newParameters
-            });
-
-            // Sayfalanmış sonuçları döndür
-            return {
-                totalCount: total,
-                pageCount: Math.ceil(total / pageSize),
-                page: page.toString(),
-                pageSize,
-                detail: results as T[],
-            };
-        } catch (error) {
-            mssqlLogger.error('Sayfalama sorgu hatası:', error);
-            throw error;
-        }
+  }
+  
+  /**
+   * SQL komutu çalıştırır (insert, update, delete vs.)
+   * @param options Execute seçenekleri
+   * @returns Etkilenen satır sayısı veya dönen sonuçlar
+   */
+  public async execute(options: ExecuteOptions): Promise<unknown[]> {
+    try {
+      const pool = await this.getConnection();
+      
+      return await executeSql(pool, {
+        sql: options.sql,
+        parameters: options.parameters,
+        bulk: options.bulk,
+        encryption: options.encryption,
+        transaction: options.transaction
+      });
+    } catch (error) {
+      mssqlLogger.error('Execute hatası:', error);
+      throw error;
     }
+  }
+  
+  /**
+   * Sayfalama destekli SQL sorgusu çalıştırır
+   * @param options Sayfalama sorgu seçenekleri
+   * @returns Sayfalama sonuçları (veriler ve meta bilgiler)
+   */
+  public async queryWithPagination<T>(options: QueryWithPaginationOptions): Promise<PaginationResult<T>> {
+    try {
+      const pool = await this.getConnection();
+      
+      // Sayfalama değerlerini ayarla
+      const page = Number(options.page) || 1;
+      const pageSize = options.pageSize || 20;
+      const orderBy = options.orderBy || 'id';
+      
+      // OFFSET-FETCH NEXT kullanarak sayfalama uygula
+      const offset = (page - 1) * pageSize;
+      
+      // Toplam kayıt sayısını almak için COUNT sorgusu
+      const countQuery = `
+        SELECT COUNT(*) AS totalCount 
+        FROM (${options.sql}) AS CountSubquery
+      `;
+      
+      // Ana veri sorgusu (sayfalama ile)
+      const dataQuery = `
+        SELECT * FROM (${options.sql}) AS PagedQuery
+        ORDER BY ${orderBy}
+        OFFSET ${offset} ROWS
+        FETCH NEXT ${pageSize} ROWS ONLY
+      `;
+      
+      // İki sorguyu paralel çalıştır
+      const [countResult, dataResult] = await Promise.all([
+        executeSql<{ totalCount: number }>(pool, {
+          sql: countQuery,
+          parameters: options.parameters,
+          encryption: options.encryption,
+          transaction: options.transaction
+        }),
+        executeSql<T>(pool, {
+          sql: dataQuery,
+          parameters: options.parameters,
+          encryption: options.encryption,
+          transaction: options.transaction
+        })
+      ]);
+      
+      // Toplam sayfa sayısını hesapla
+      const totalCount = countResult[0]?.totalCount || 0;
+      const pageCount = Math.ceil(totalCount / pageSize);
+      
+      // Sayfalama sonucunu oluştur
+      return {
+        detail: dataResult,
+        totalCount,
+        pageCount,
+        page: page.toString(),
+        pageSize
+      };
+    } catch (error) {
+      mssqlLogger.error('Sayfalama sorgusu hatası:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * İşlem (transaction) içinde kodları çalıştırır
+   * @param callback İşlem içinde çalıştırılacak fonksiyon
+   * @returns İşlem sonucu
+   */
+  public async transaction<T>(callback: (transaction: mssql.Transaction) => Promise<T>): Promise<T> {
+    const pool = await this.getConnection();
+    const transaction = new mssql.Transaction(pool);
     
-    /**
-     * Bir işlem içinde birden çok sorgu çalıştırır
-     * @param callback İşlem içinde çalıştırılacak fonksiyon
-     * @returns İşlem sonucu
-     */
-    async transaction<T>(
-        callback: (transaction: mssql.Transaction) => Promise<T>
-    ): Promise<T> {
-        const pool = await poolManager.getPool();
-        const transaction = new mssql.Transaction(pool);
-
-        try {
-            // İşlemi başlat
-            await transaction.begin();
-            
-            // Anahtar yöneticisi için işleme özgü bağlantı ID'si oluştur
-            const keyConnId = keyManagerService.generateConnectionId(pool, transaction);
-            
-            // İşlem ile geri çağırımı çalıştır
-            const result = await callback(transaction);
-            
-            // İşlemi tamamla
-            await transaction.commit();
-            
-            // Anahtarları ve işlem kaynaklarını temizle
-            keyManagerService.cleanupTransaction(pool, transaction, keyConnId);
-            
-            return result;
-        } catch (error) {
-            mssqlLogger.error('İşlem hatası:', error);
-            
-            // Geri almayı dene
-            try {
-                await transaction.rollback();
-                
-                // Hata durumunda da kaynakları temizle
-                keyManagerService.cleanupTransaction(pool, transaction);
-            } catch (rollbackError) {
-                mssqlLogger.error('İşlem geri alma sırasında hata:', rollbackError);
-            }
-            
-            throw error;
-        }
+    try {
+      // İşlemi başlat
+      await transaction.begin();
+      
+      // Callback fonksiyonu çalıştır
+      const result = await callback(transaction);
+      
+      // İşlemi onayla
+      await transaction.commit();
+      
+      return result;
+    } catch (error) {
+      // Hata durumunda işlemi geri al
+      try {
+        await transaction.rollback();
+      } catch (rollbackError) {
+        mssqlLogger.error('İşlem geri alma hatası:', rollbackError);
+      }
+      
+      mssqlLogger.error('İşlem hatası:', error);
+      throw error;
     }
-
-    /**
-     * Veritabanında açık anahtarları kontrol eder
-     */
-    async checkOpenKeys(): Promise<unknown[]> {
-        const pool = await poolManager.getPool();
-        return keyManagerService.checkOpenKeys(pool);
+  }
+  
+  /**
+   * Veritabanı bağlantısını kapatır
+   */
+  public async close(): Promise<void> {
+    try {
+      // Şifreleme servisini kapat
+      sqlServerEncryption.shutdown();
+      
+      // Havuzu kapat
+      await poolManager.shutdown();
+      
+      mssqlLogger.info('Veritabanı bağlantısı başarıyla kapatıldı');
+    } catch (error) {
+      mssqlLogger.error('Veritabanı kapatma hatası:', error);
+      throw error;
     }
-
-    /**
-     * Veritabanında tüm anahtarları kapatır - SQL Server kısıtlamalarını dikkate alır
-     */
-    async closeAllKeys(): Promise<void> {
-        const pool = await poolManager.getPool();
-        try {
-            // Açık anahtarları kontrol et
-            const openKeys = await keyManagerService.checkOpenKeys(pool, false);
-            
-            if (openKeys.length > 0) {
-                mssqlLogger.info(`${openKeys.length} açık anahtar bulundu, sadece özel anahtarlar kapatılıyor`);
-                
-                // Sadece özel simetrik anahtarı kapat
-                if (config.database.symmetricKeyName) {
-                    try {
-                        const request = pool.request();
-                        await request.batch(`
-                            IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${config.database.symmetricKeyName}')
-                            BEGIN
-                                CLOSE SYMMETRIC KEY ${config.database.symmetricKeyName};
-                            END
-                        `);
-                        mssqlLogger.info(`Simetrik anahtar kapatıldı: ${config.database.symmetricKeyName}`);
-                    } catch (error) {
-                        // Hata durumunda sadece logla ve devam et
-                        mssqlLogger.debug('Simetrik anahtar kapatma sırasında hata (yok sayılıyor):', error);
-                    }
-                }
-                
-                // Master key'i kapatmayı deneme, MS SQL Server bunu izin vermiyor
-            } else {
-                mssqlLogger.info('Kapatılacak açık anahtar bulunmamaktadır');
-            }
-            
-            // Hafızadaki anahtar durumlarını temizle
-            const connectionStates = keyManagerService['connectionKeyStates'];
-            if (connectionStates && connectionStates instanceof Map) {
-                for (const connId of connectionStates.keys()) {
-                    connectionStates.delete(connId); // Doğrudan temizleme
-                }
-                mssqlLogger.debug('Hafızadaki anahtar durumları temizlendi');
-            }
-        } catch (error) {
-            // Hata durumunda sadece logla, uygulamanın çalışmaya devam etmesini sağla
-            mssqlLogger.debug('Anahtarları kapatma sırasında beklenen hata (yok sayılıyor):', error);
-        }
+  }
+  
+  /**
+   * Veritabanında şifreleme anahtarlarını kurar (veritabanı ilk kurulumunda)
+   * @param masterKeyPassword Ana anahtar şifresi
+   * @param certificateName Sertifika adı
+   * @param symmetricKeyName Simetrik anahtar adı
+   * @returns Kurulum sonucu
+   */
+  public async setupEncryptionKeys(
+    masterKeyPassword: string,
+    certificateName: string,
+    symmetricKeyName: string
+  ): Promise<boolean> {
+    try {
+      const pool = await this.getConnection();
+      const request = pool.request();
+      
+      // Ana anahtar var mı kontrol et
+      const masterKeyCheck = await request.query(`
+        SELECT COUNT(*) AS keyCount 
+        FROM sys.symmetric_keys 
+        WHERE name = '##MS_DatabaseMasterKey##'
+      `);
+      
+      const masterKeyExists = masterKeyCheck.recordset[0].keyCount > 0;
+      
+      // Ana anahtar yoksa oluştur
+      if (!masterKeyExists) {
+        mssqlLogger.info('Veritabanında master key oluşturuluyor...');
+        await request.query(`
+          CREATE MASTER KEY ENCRYPTION BY PASSWORD = '${masterKeyPassword}'
+        `);
+      }
+      
+      // Sertifika var mı kontrol et
+      const certCheck = await request.query(`
+        SELECT COUNT(*) AS certCount 
+        FROM sys.certificates 
+        WHERE name = '${certificateName}'
+      `);
+      
+      const certExists = certCheck.recordset[0].certCount > 0;
+      
+      // Sertifika yoksa oluştur
+      if (!certExists) {
+        mssqlLogger.info(`'${certificateName}' sertifikası oluşturuluyor...`);
+        await request.query(`
+          CREATE CERTIFICATE ${certificateName}
+          WITH SUBJECT = 'SQL Server Encryption Certificate'
+        `);
+      }
+      
+      // Simetrik anahtar var mı kontrol et
+      const symKeyCheck = await request.query(`
+        SELECT COUNT(*) AS keyCount 
+        FROM sys.symmetric_keys 
+        WHERE name = '${symmetricKeyName}'
+      `);
+      
+      const symKeyExists = symKeyCheck.recordset[0].keyCount > 0;
+      
+      // Simetrik anahtar yoksa oluştur
+      if (!symKeyExists) {
+        mssqlLogger.info(`'${symmetricKeyName}' simetrik anahtarı oluşturuluyor...`);
+        await request.query(`
+          CREATE SYMMETRIC KEY ${symmetricKeyName}
+          WITH ALGORITHM = AES_256
+          ENCRYPTION BY CERTIFICATE ${certificateName}
+        `);
+      }
+      
+      mssqlLogger.info('Şifreleme anahtarları başarıyla kuruldu');
+      return true;
+    } catch (error) {
+      mssqlLogger.error('Şifreleme anahtarları kurulum hatası:', error);
+      throw error;
     }
-
-    /**
-     * Veritabanı bağlantısını kapatır
-     */
-    async close(): Promise<void> {
-        try {
-            // Önce tüm anahtarları kapatmaya çalış
-            await this.closeAllKeys().catch(err => {
-                mssqlLogger.error('Kapatma sırasında anahtarları temizleme hatası:', err);
-            });
-            
-            // Havuzu kapat
-            await poolManager.shutdown();
-            
-        } catch (error) {
-            mssqlLogger.error('Veritabanı bağlantısını kapatma hatası:', error);
-            throw error;
-        }
-    }
+  }
 }
 
-// MSSQL sağlayıcı örneğini oluştur
-export const mssqlProvider = new MssqlProvider();
+// MSSQL sağlayıcısı örneği
+export const mssqlProvider = new MSSQLProvider();

@@ -18,7 +18,6 @@ export const getProvider = (): DatabaseProvider => {
     switch (config.database.type) {
         case 'mssql':
             return mssqlProvider;
-        // Gelecekte diğer sağlayıcılar burada desteklenebilir
         default:
             throw new DatabaseError(
                 ErrorCode.INVALID_PARAMETER,

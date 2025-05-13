@@ -19,3 +19,4 @@ export const INFO = {
     version: VERSION,
     description: 'A flexible database connector service with MSSQL support, pagination, caching, and encryption'
 };
+

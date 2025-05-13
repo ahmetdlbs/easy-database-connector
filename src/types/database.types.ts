@@ -4,7 +4,8 @@ import { ExecuteOptions, PaginationResult, QueryOptions, QueryWithPaginationOpti
 
 export { mssql };
 
-export type SqlValue = string | number | boolean | Date | Buffer | null | undefined | Object;
+// MSSQL kütüphanesi ile uyumlu SQL değer tipi
+export type SqlValue = string | number | boolean | Date | Buffer | null | undefined;
 
 export interface DatabaseRecord {
     [key: string]: any;

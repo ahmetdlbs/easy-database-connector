@@ -1,6 +1,6 @@
 import { mssql } from '../../../types';
 import { config } from '../../../config';
-import { keyManagerService } from './key-manager';
+import { sqlServerEncryption } from './encryption';
 import { mssqlLogger } from '../../../utils';
 
 /**
@@ -47,6 +47,8 @@ export class MssqlPoolManager {
                 trustServerCertificate: config.database.options?.trustServerCertificate,
                 enableArithAbort: true,
                 appName: 'easy-database-connector',
+                // Always Encrypted kullanılacaksa bu seçeneği etkinleştir
+                // enableColumnEncryption: true
             },
             pool: {
                 max: 20,           // Maksimum havuz boyutu
@@ -70,8 +72,8 @@ export class MssqlPoolManager {
             if (this.pool === newPool && !this.isShuttingDown) {
                 mssqlLogger.warn('Ölümcül hata nedeniyle havuz sıfırlanıyor');
                 
-                // Anahtar yöneticisini temizle
-                keyManagerService.cleanupConnection(newPool);
+                // Şifreleme servisini sıfırla
+                sqlServerEncryption.shutdown();
                 
                 // Bir sonraki istekte yeni bir havuz oluşturulacak şekilde havuz değişkenlerini sıfırla
                 this.pool = null;
@@ -110,7 +112,7 @@ export class MssqlPoolManager {
         
         // Kapatma sürecindeyse yeni bağlantı oluşturma
         if (this.isShuttingDown) {
-            throw new Error('Kapatma işlemi during shutdown sırasında havuz alınamaz');
+            throw new Error('Kapatma işlemi sırasında havuz alınamaz');
         }
         
         // Zaten bir havuz oluşturuyorsak o promise'i döndür
@@ -150,8 +152,8 @@ export class MssqlPoolManager {
                 this.connectionTimeouts.delete(id);
             }
             
-            // Tüm anahtarları kapat ve anahtar yöneticisini kapat
-            keyManagerService.shutdown();
+            // Şifreleme servisini kapat
+            sqlServerEncryption.shutdown();
             
             // Havuzu kapat
             if (this.pool) {
