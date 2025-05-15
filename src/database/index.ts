@@ -153,46 +153,10 @@ async function clearCache(cacheKey: string): Promise<void> {
  */
 export async function execute(options: ExecuteOptions): Promise<unknown[]> {
     try {
-        // Önbellek temizleme - işlemde değilse
-        if (!options.transaction) {
-            // 1. Doğrudan belirtilen cache key varsa temizle
-            if (options.cache?.key) {
-                await clearCache(options.cache.key);
-            }
-            
-            // 2. SQL sorgusundan tablo adını çıkar ve ilgili önbellekleri temizle
-            const sql = options.sql?.toLowerCase();
-            if (sql) {
-                let tableName: string | undefined;
-                
-                // Çeşitli SQL komutları için tablo adını çıkar
-                if (sql.startsWith('insert into ')) {
-                    tableName = sql.substring(12).split(/\s+/)[0].replace(/[\[\]"`']/g, '');
-                } else if (sql.startsWith('update ')) {
-                    tableName = sql.substring(7).split(/\s+/)[0].replace(/[\[\]"`']/g, '');
-                } else if (sql.startsWith('delete from ')) {
-                    tableName = sql.substring(12).split(/\s+/)[0].replace(/[\[\]"`']/g, '');
-                }
-                
-                // Bulk insert durumunda da tablo adı olabilir
-                if (!tableName && options.bulk) {
-                    tableName = sql.trim().replace(/[\[\]"`']/g, '');
-                }
-                
-                // Tablo adı bulunduysa, bu tabloyla ilgili tüm önbellekleri temizle
-                if (tableName) {
-                    try {
-                        await redisService.del(`${tableName}:*`);
-                        databaseLogger.debug(`'${tableName}:*' desenine uyan tüm önbellek öğeleri temizlendi`);
-                    } catch (redisError) {
-                        // Hata durumunda sadece logla, işlemin devam etmesini sağla
-                        databaseLogger.debug(`'${tableName}:*' desenine uyan önbellek temizleme hatası:`, redisError);
-                    }
-                }
-            }
+        if (options.cache?.key) {
+            await clearCache(options.cache.key);
         }
 
-        // Sorguyu çalıştır
         return await provider.execute(options);
     } catch (error) {
         databaseLogger.error('Çalıştırma hatası:', error);

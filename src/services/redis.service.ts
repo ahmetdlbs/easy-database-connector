@@ -258,7 +258,7 @@ class RedisService {
             const allKeys = keyArrays.flat();
             
             // Anahtarları sil
-            if (allKeys.length) {
+            if (allKeys?.length) {
                 const deleted = await redis.del(allKeys);
                 return deleted;
             }
