@@ -246,7 +246,9 @@ export class SqlExecutor {
       const encryptionEnabled = sqlServerEncryption.isEncryptionAvailable() && options.encryption?.open;
       
       if (encryptionEnabled) {
-        finalSql = sqlServerEncryption.wrapQueryWithEncryption(options.sql);
+        // Transaction varsa bunu belirt - bu işlem içindeyse anahtarları kapatmamak için
+        const inTransaction = options.transaction !== undefined;
+        finalSql = sqlServerEncryption.wrapQueryWithEncryption(options.sql, inTransaction);
       }
       
       // Sorguyu çalıştır (timeout korumalı)

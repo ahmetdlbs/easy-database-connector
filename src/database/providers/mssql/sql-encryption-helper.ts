@@ -45,7 +45,8 @@ const SqlEncryptionHelper = {
     sql: string, 
     masterKeyPassword: string, 
     symmetricKeyName: string, 
-    certificateName: string
+    certificateName: string,
+    inTransaction: boolean = false
   ): string {
     return `
       BEGIN TRY
@@ -65,11 +66,12 @@ const SqlEncryptionHelper = {
         -- Ana sorgu
         ${sql}
 
-        -- Simetrik anahtarı kapatma girişimi (güvenlik için)
+        -- Transaction içinde değilse anahtarları kapat
+        ${!inTransaction ? `
         IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${symmetricKeyName}')
         BEGIN
           CLOSE SYMMETRIC KEY ${symmetricKeyName};
-        END
+        END` : '-- Transaction içinde olduğu için anahtarlar açık bırakılıyor'}
       END TRY
       BEGIN CATCH
         -- Hata durumunda temizlik

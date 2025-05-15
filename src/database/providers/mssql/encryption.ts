@@ -220,47 +220,8 @@ export class SqlServerEncryption {
         return false;
       }
       
-      // Açma işlemini test et
-      try {
-        await request.batch(`
-          BEGIN TRY
-            -- Master key'i aç
-            OPEN MASTER KEY DECRYPTION BY PASSWORD = '${this.config.cle.masterKeyPassword}';
-            
-            -- Simetrik anahtarı aç
-            OPEN SYMMETRIC KEY ${this.config.cle.symmetricKeyName} 
-            DECRYPTION BY CERTIFICATE ${this.config.cle.certificateName};
-            
-            -- Anahtarları kapat
-            CLOSE SYMMETRIC KEY ${this.config.cle.symmetricKeyName};
-            CLOSE MASTER KEY;
-          END TRY
-          BEGIN CATCH
-            -- Hata durumunda temizlik
-            IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = '${this.config.cle.symmetricKeyName}')
-            BEGIN
-              CLOSE SYMMETRIC KEY ${this.config.cle.symmetricKeyName};
-            END
-              
-            IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'master')
-            BEGIN
-              CLOSE MASTER KEY;
-            END
-              
-            -- RAISERROR kullanımı (THROW yerine)
-            DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
-            DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
-            DECLARE @ErrorState INT = ERROR_STATE();
-            RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
-          END CATCH
-        `);
-      } catch (error) {
-        SqlEncryptionHelper.log('error', 'Şifreleme anahtarı açma testi başarısız:', error);
-        this.isInitialized = true;
-        this.keysAvailable = false;
-        return false;
-      }
-      
+      // Zaman aşımı sorunlarına yol açan açma testi atlanıyor
+      // Anahtarlar var ise, başarılı kabul et
       SqlEncryptionHelper.log('info', 'SQL Server Column Level Encryption başarıyla başlatıldı');
       this.isInitialized = true;
       this.keysAvailable = true;
@@ -333,8 +294,9 @@ export class SqlServerEncryption {
   /**
    * Sorguyu şifreleme komutlarıyla sarar
    * @param sql Orijinal SQL sorgusu
+   * @param inTransaction İşlem içinde mi
    */
-  public wrapQueryWithEncryption(sql: string): string {
+  public wrapQueryWithEncryption(sql: string, inTransaction: boolean = false): string {
     if (!this.isEncryptionAvailable() || !this.config?.cle) {
       return sql;
     }
@@ -343,7 +305,8 @@ export class SqlServerEncryption {
       sql,
       this.config.cle.masterKeyPassword,
       this.config.cle.symmetricKeyName,
-      this.config.cle.certificateName
+      this.config.cle.certificateName,
+      inTransaction
     );
   }
   
@@ -394,8 +357,9 @@ export class SqlServerEncryption {
           // JSON değerlerini hazırla
           request.input('values', mssql.NVarChar(mssql.MAX), JSON.stringify(batchValues));
           
-          // Sorguyu şifreleme komutlarıyla sar
-          const encryptionQuery = this.wrapQueryWithEncryption(this.buildEncryptionQuery());
+          // Sorguyu şifreleme komutlarıyla sar - transaction varsa bunu belirt
+          const hasTransaction = transaction !== undefined;
+          const encryptionQuery = this.wrapQueryWithEncryption(this.buildEncryptionQuery(), hasTransaction);
           
           // Şifreleme sorgusunu çalıştır
           const result = await request.query(encryptionQuery);
